@@ -1,8 +1,8 @@
 # Terraform Provider Google Marketing
 
-Provider Terraform para gestionar Google Tag Manager y Google Analytics 4 Admin con recursos tipados. La UX principal no requiere conocer ni escribir payloads de las APIs de Google.
+Terraform provider for managing Google Tag Manager and Google Analytics 4 Admin with typed resources. The primary UX does not require users to know or write Google API payloads.
 
-## Setup local
+## Local Setup
 
 ```bash
 git clone https://github.com/rockingsoft/terraform-googlemarketing-provider.git
@@ -16,22 +16,22 @@ cp "$(go env GOPATH)/bin/terraform-provider-googlemarketing" \
   "$HOME/.terraform.d/plugins/registry.terraform.io/rockingsoft/googlemarketing/0.1.0/$GOOGLEMARKETING_PLATFORM/terraform-provider-googlemarketing_v0.1.0"
 ```
 
-## Credenciales
+## Credentials
 
-Habilitá las APIs:
+Enable the APIs:
 
 ```bash
 gcloud services enable tagmanager.googleapis.com analyticsadmin.googleapis.com googleads.googleapis.com
 ```
 
-Autenticación con Application Default Credentials:
+Authenticate with Application Default Credentials:
 
 ```bash
 gcloud auth application-default login \
   --scopes=https://www.googleapis.com/auth/cloud-platform,https://www.googleapis.com/auth/tagmanager.edit.containers,https://www.googleapis.com/auth/tagmanager.manage.accounts,https://www.googleapis.com/auth/analytics.edit,https://www.googleapis.com/auth/adwords
 ```
 
-También podés usar credenciales JSON de Google:
+You can also use Google JSON credentials:
 
 ```bash
 export GOOGLE_APPLICATION_CREDENTIALS="$PWD/credentials.json"
@@ -52,7 +52,7 @@ terraform {
 provider "googlemarketing" {}
 ```
 
-## GA4 y GTM
+## GA4 and GTM
 
 ```hcl
 resource "googlemarketing_ga4_web_data_stream" "web" {
@@ -107,7 +107,7 @@ resource "googlemarketing_gtm_version_publication" "release" {
 }
 ```
 
-Si administrás la propiedad GA4 con este provider y necesitás conservar un output numérico, usá `property_id`:
+If you manage the GA4 property with this provider and need to keep a numeric output, use `property_id`:
 
 ```hcl
 output "ga4_property_id" {
@@ -115,7 +115,7 @@ output "ga4_property_id" {
 }
 ```
 
-## Recursos Tipados
+## Typed Resources
 
 GTM:
 
@@ -137,9 +137,9 @@ GA4:
 - `googlemarketing_ga4_custom_metric`
 - `googlemarketing_ga4_data_retention_settings`
 
-Los recursos genéricos legacy siguen existiendo para compatibilidad, pero no son la ruta recomendada.
+Legacy generic resources are still available for compatibility, but they are not the recommended path.
 
-## Validación
+## Validation
 
 ```bash
 go test ./...
@@ -147,7 +147,7 @@ terraform init
 terraform plan
 ```
 
-Acceptance tests contra APIs reales:
+Acceptance tests against real APIs:
 
 ```bash
 export GOOGLEMARKETING_ACC=1
@@ -158,4 +158,4 @@ export GOOGLEMARKETING_ACC_MEASUREMENT_ID="G-..."
 go test ./internal/provider -run TestAcc -count=1 -v
 ```
 
-Para Google Tag Manager, el flujo GA4 recomendado es crear primero `googlemarketing_gtm_google_tag_config` y luego eventos con `googlemarketing_gtm_ga4_event_tag`. El recurso genérico `googlemarketing_gtm_tag` conserva compatibilidad legacy, incluyendo `measurementIdOverride` para `type = "gaawe"`.
+For Google Tag Manager, the recommended GA4 flow is to create `googlemarketing_gtm_google_tag_config` first and then create events with `googlemarketing_gtm_ga4_event_tag`. The generic `googlemarketing_gtm_tag` resource keeps legacy compatibility, including `measurementIdOverride` for `type = "gaawe"`.
