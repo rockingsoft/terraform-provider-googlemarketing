@@ -30,6 +30,8 @@ archives:
     files:
       - LICENSE
       - README.md
+      - docs/**
+      - examples/**
       - terraform-registry-manifest.json
 
 checksum:
