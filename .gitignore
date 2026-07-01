@@ -6,3 +6,4 @@ terraform.tfstate.backup
 *.tfvars.json
 terraform-provider-googlemarketing
 dist/
+bin

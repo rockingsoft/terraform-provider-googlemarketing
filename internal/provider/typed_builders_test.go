@@ -47,6 +47,9 @@ func TestBuildGTMTriggerPayloadCustomEvent(t *testing.T) {
 		CustomEventName: types.StringValue("purchase"),
 	}
 	payload := buildGTMPayload(context.Background(), "trigger", model)
+	if got, want := payload["type"], "customEvent"; got != want {
+		t.Fatalf("trigger type = %#v, want %#v", got, want)
+	}
 	filters := payload["customEventFilter"].([]any)
 	first := filters[0].(map[string]any)
 	if first["type"] != "EQUALS" {
@@ -104,6 +107,73 @@ func TestBuildGTMGoogleTagConfigPayload(t *testing.T) {
 	params := payload["parameter"].([]any)
 	if !hasGTMParam(params, "tagId", "G-ABC123") {
 		t.Fatalf("unexpected Google tag config parameters: %#v", params)
+	}
+}
+
+func TestExistingGoogleTagConfigPathFindsMatchingTagID(t *testing.T) {
+	out := map[string]any{
+		"gtagConfig": []any{
+			map[string]any{
+				"path": "accounts/1/containers/2/workspaces/3/gtag_config/10",
+				"parameter": []any{
+					map[string]any{"key": "tagId", "value": "G-OTHER"},
+				},
+			},
+			map[string]any{
+				"path": "accounts/1/containers/2/workspaces/3/gtag_config/11",
+				"parameter": []any{
+					map[string]any{"key": "tagId", "value": "G-ABC123"},
+				},
+			},
+		},
+	}
+
+	if got, want := existingGoogleTagConfigPath(out, "G-ABC123"), "accounts/1/containers/2/workspaces/3/gtag_config/11"; got != want {
+		t.Fatalf("existingGoogleTagConfigPath() = %q, want %q", got, want)
+	}
+	if got := existingGoogleTagConfigPath(out, "G-MISSING"); got != "" {
+		t.Fatalf("existingGoogleTagConfigPath() = %q, want empty", got)
+	}
+}
+
+func TestGoogleTagConfigsSupported(t *testing.T) {
+	supported, ok := googleTagConfigsSupported(map[string]any{
+		"features": map[string]any{
+			"supportGtagConfigs": false,
+		},
+	})
+	if !ok {
+		t.Fatalf("googleTagConfigsSupported() ok = false, want true")
+	}
+	if supported {
+		t.Fatalf("googleTagConfigsSupported() supported = true, want false")
+	}
+
+	if _, ok := googleTagConfigsSupported(map[string]any{"features": map[string]any{}}); ok {
+		t.Fatalf("googleTagConfigsSupported() ok = true, want false")
+	}
+}
+
+func TestGTMTriggerTypeStatePreservesEquivalentPriorCasing(t *testing.T) {
+	model := gtmTypedWorkspaceEntityModel{Type: types.StringValue("CUSTOM_EVENT")}
+	applyGTMRemoteTypedFields(&model, "trigger", map[string]any{
+		"type":              "customEvent",
+		"customEventFilter": []any{gtmCondition("EQUALS", "{{_event}}", "purchase")},
+	})
+
+	if got, want := model.Type.ValueString(), "CUSTOM_EVENT"; got != want {
+		t.Fatalf("trigger type = %q, want %q", got, want)
+	}
+}
+
+func TestGTMTriggerTypeStateUsesRemoteWithoutPriorCasing(t *testing.T) {
+	model := gtmTypedWorkspaceEntityModel{}
+	applyGTMRemoteTypedFields(&model, "trigger", map[string]any{
+		"type": "customEvent",
+	})
+
+	if got, want := model.Type.ValueString(), "customEvent"; got != want {
+		t.Fatalf("trigger type = %q, want %q", got, want)
 	}
 }
 
@@ -184,30 +254,19 @@ func TestApplyGA4RemoteCompletesDriftFields(t *testing.T) {
 	}
 }
 
-func TestBuildGTMGA4EventTagPayloadOmitsMeasurementID(t *testing.T) {
+func TestValidateGTMGA4EventTagRequiresMeasurementIDOverride(t *testing.T) {
 	model := gtmGA4EventTagModel{
 		Name:       types.StringValue("GA4 - signup_started"),
 		EventName:  types.StringValue("signup_started"),
 		TriggerIDs: stringListValue([]string{"123"}),
 	}
-	payload := buildGTMGA4EventTagPayload(context.Background(), model)
 
-	if got, want := payload["type"], "gaawe"; got != want {
-		t.Fatalf("type = %#v, want %#v", got, want)
-	}
-	if got, want := payload["firingTriggerId"], []string{"123"}; !reflect.DeepEqual(got, want) {
-		t.Fatalf("firingTriggerId = %#v, want %#v", got, want)
-	}
-	params := payload["parameter"].([]any)
-	if !hasGTMParam(params, "eventName", "signup_started") {
-		t.Fatalf("unexpected GA4 event tag parameters: %#v", params)
-	}
-	if hasGTMParamKey(params, "measurementId") || hasGTMParamKey(params, "measurementIdOverride") {
-		t.Fatalf("GA4 event tag should not include measurement ID by default: %#v", params)
+	if err := validateGTMGA4EventTag(model); err == nil {
+		t.Fatalf("validateGTMGA4EventTag() error = nil, want error")
 	}
 }
 
-func TestBuildGTMGA4EventTagPayloadAllowsMeasurementIDOverride(t *testing.T) {
+func TestBuildGTMGA4EventTagPayloadIncludesMeasurementIDOverride(t *testing.T) {
 	model := gtmGA4EventTagModel{
 		Name:                  types.StringValue("GA4 - purchase"),
 		EventName:             types.StringValue("purchase"),
@@ -215,9 +274,21 @@ func TestBuildGTMGA4EventTagPayloadAllowsMeasurementIDOverride(t *testing.T) {
 		TriggerIDs:            stringListValue([]string{"123"}),
 	}
 	payload := buildGTMGA4EventTagPayload(context.Background(), model)
+	if got, want := payload["type"], "gaawe"; got != want {
+		t.Fatalf("type = %#v, want %#v", got, want)
+	}
+	if got, want := payload["firingTriggerId"], []string{"123"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("firingTriggerId = %#v, want %#v", got, want)
+	}
 	params := payload["parameter"].([]any)
+	if !hasGTMParam(params, "eventName", "purchase") {
+		t.Fatalf("unexpected GA4 event tag parameters: %#v", params)
+	}
 	if !hasGTMParam(params, "measurementIdOverride", "G-ABC123") {
 		t.Fatalf("unexpected GA4 event tag parameters: %#v", params)
+	}
+	if err := validateGTMGA4EventTag(model); err != nil {
+		t.Fatalf("validateGTMGA4EventTag() error = %v", err)
 	}
 }
 
@@ -237,16 +308,6 @@ func hasGTMParam(params []any, key, value string) bool {
 	for _, raw := range params {
 		param, _ := raw.(map[string]any)
 		if param["key"] == key && param["value"] == value {
-			return true
-		}
-	}
-	return false
-}
-
-func hasGTMParamKey(params []any, key string) bool {
-	for _, raw := range params {
-		param, _ := raw.(map[string]any)
-		if param["key"] == key {
 			return true
 		}
 	}

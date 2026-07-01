@@ -2,42 +2,12 @@ package provider
 
 import (
 	"context"
-	"errors"
 	"fmt"
-	"net/http"
 	"strings"
 
 	"github.com/hashicorp/terraform-plugin-framework/attr"
-	"github.com/hashicorp/terraform-plugin-framework/resource"
-	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
 	"github.com/hashicorp/terraform-plugin-framework/types"
 )
-
-var _ resource.Resource = (*gtmTypedWorkspaceEntityResource)(nil)
-var _ resource.ResourceWithConfigure = (*gtmTypedWorkspaceEntityResource)(nil)
-var _ resource.ResourceWithImportState = (*gtmTypedWorkspaceEntityResource)(nil)
-
-func NewGTMVariableResource() resource.Resource {
-	return &gtmTypedWorkspaceEntityResource{kind: "variable", typeSuffix: "_gtm_variable"}
-}
-
-func NewGTMTriggerResource() resource.Resource {
-	return &gtmTypedWorkspaceEntityResource{kind: "trigger", typeSuffix: "_gtm_trigger"}
-}
-
-func NewGTMTagResource() resource.Resource {
-	return &gtmTypedWorkspaceEntityResource{kind: "tag", typeSuffix: "_gtm_tag"}
-}
-
-func NewGTMFolderResource() resource.Resource {
-	return &gtmTypedWorkspaceEntityResource{kind: "folder", typeSuffix: "_gtm_folder"}
-}
-
-type gtmTypedWorkspaceEntityResource struct {
-	client     *marketingClient
-	kind       string
-	typeSuffix string
-}
 
 type gtmTypedWorkspaceEntityModel struct {
 	ID                 types.String `tfsdk:"id"`
@@ -66,177 +36,36 @@ type gtmTypedWorkspaceEntityModel struct {
 	BlockingTriggerIDs types.List   `tfsdk:"blocking_trigger_ids"`
 }
 
-func (r *gtmTypedWorkspaceEntityResource) Metadata(_ context.Context, req resource.MetadataRequest, resp *resource.MetadataResponse) {
-	resp.TypeName = req.ProviderTypeName + r.typeSuffix
+type gtmGA4EventTagModel struct {
+	ID                    types.String `tfsdk:"id"`
+	AccountID             types.String `tfsdk:"account_id"`
+	ContainerID           types.String `tfsdk:"container_id"`
+	WorkspaceID           types.String `tfsdk:"workspace_id"`
+	Name                  types.String `tfsdk:"name"`
+	EventName             types.String `tfsdk:"event_name"`
+	MeasurementIDOverride types.String `tfsdk:"measurement_id_override"`
+	Notes                 types.String `tfsdk:"notes"`
+	EntityID              types.String `tfsdk:"entity_id"`
+	Path                  types.String `tfsdk:"path"`
+	TriggerIDs            types.List   `tfsdk:"trigger_ids"`
+	BlockingTriggerIDs    types.List   `tfsdk:"blocking_trigger_ids"`
 }
 
-func (r *gtmTypedWorkspaceEntityResource) Schema(_ context.Context, _ resource.SchemaRequest, resp *resource.SchemaResponse) {
-	attrs := map[string]schema.Attribute{
-		"id":           schema.StringAttribute{Computed: true},
-		"entity_id":    schema.StringAttribute{Computed: true, Description: "Short GTM entity ID returned by Google."},
-		"path":         schema.StringAttribute{Computed: true, Description: "GTM API resource path returned by Google."},
-		"account_id":   replaceStringAttribute(),
-		"container_id": replaceStringAttribute(),
-		"workspace_id": replaceStringAttribute(),
-		"name":         schema.StringAttribute{Required: true},
-		"type":         schema.StringAttribute{Optional: true, Description: "GTM entity type where applicable."},
-		"notes":        schema.StringAttribute{Optional: true},
-		"measurement_id": schema.StringAttribute{
-			Optional:    true,
-			Description: "GA4 measurement ID used by GA4 tag types.",
-		},
-		"event_name":         schema.StringAttribute{Optional: true, Description: "GA4 event name."},
-		"html":               schema.StringAttribute{Optional: true, Sensitive: true, Description: "Custom HTML body for html tags."},
-		"conversion_id":      schema.StringAttribute{Optional: true, Description: "Google Ads conversion ID."},
-		"conversion_label":   schema.StringAttribute{Optional: true, Sensitive: true, Description: "Google Ads conversion label."},
-		"custom_event_name":  schema.StringAttribute{Optional: true, Description: "Event name for CUSTOM_EVENT triggers."},
-		"filter_variable":    schema.StringAttribute{Optional: true, Description: "Variable used by the optional trigger filter."},
-		"filter_operator":    schema.StringAttribute{Optional: true, Description: "Filter operator, for example EQUALS, CONTAINS, or MATCH_REGEX."},
-		"filter_value":       schema.StringAttribute{Optional: true, Description: "Filter comparison value."},
-		"value":              schema.StringAttribute{Optional: true, Sensitive: true, Description: "Constant or lookup value."},
-		"data_layer_name":    schema.StringAttribute{Optional: true, Description: "Data layer variable name."},
-		"cookie_name":        schema.StringAttribute{Optional: true, Sensitive: true, Description: "First-party cookie name."},
-		"javascript":         schema.StringAttribute{Optional: true, Sensitive: true, Description: "Custom JavaScript body."},
-		"firing_trigger_ids": schema.ListAttribute{Optional: true, ElementType: types.StringType},
-		"blocking_trigger_ids": schema.ListAttribute{
-			Optional:    true,
-			ElementType: types.StringType,
-		},
-	}
-
-	switch r.kind {
-	case "tag":
-		attrs["type"] = schema.StringAttribute{Required: true, Description: "GTM tag type, for example gaawe, googtag, html, or awct."}
-	case "trigger":
-		attrs["type"] = schema.StringAttribute{Required: true, Description: "GTM trigger type, for example CUSTOM_EVENT, PAGEVIEW, CLICK, FORM_SUBMISSION, TIMER, or HISTORY_CHANGE."}
-	case "variable":
-		attrs["type"] = schema.StringAttribute{Required: true, Description: "GTM variable type, for example c, v, k, or jsm."}
-	}
-
-	resp.Schema = schema.Schema{
-		Description: fmt.Sprintf("Typed Google Tag Manager workspace %s resource.", r.kind),
-		Attributes:  attrs,
-	}
-}
-
-func (r *gtmTypedWorkspaceEntityResource) Configure(_ context.Context, req resource.ConfigureRequest, resp *resource.ConfigureResponse) {
-	if req.ProviderData == nil {
-		return
-	}
-	client, ok := req.ProviderData.(*marketingClient)
-	if !ok {
-		resp.Diagnostics.AddError("Unexpected provider data", fmt.Sprintf("Expected *marketingClient, got %T", req.ProviderData))
-		return
-	}
-	r.client = client
-}
-
-func (r *gtmTypedWorkspaceEntityResource) Create(ctx context.Context, req resource.CreateRequest, resp *resource.CreateResponse) {
-	var plan gtmTypedWorkspaceEntityModel
-	resp.Diagnostics.Append(req.Plan.Get(ctx, &plan)...)
-	if resp.Diagnostics.HasError() {
-		return
-	}
-	payload := buildGTMPayload(ctx, r.kind, plan)
-	collection, _ := gtmEntityCollection(r.kind)
-	apiPath := fmt.Sprintf("accounts/%s/containers/%s/workspaces/%s/%s", plan.AccountID.ValueString(), plan.ContainerID.ValueString(), plan.WorkspaceID.ValueString(), collection)
-	var out map[string]any
-	if err := r.client.doJSON(ctx, http.MethodPost, gtmURL(apiPath), payload, &out, nil); err != nil {
-		resp.Diagnostics.AddError("Unable to create GTM workspace entity", err.Error())
-		return
-	}
-	applyGTMRemoteIDs(&plan, r.kind, out)
-	if plan.Path.ValueString() == "" {
-		resp.Diagnostics.AddError("GTM response missing path", "Google did not return a resource path for the created entity.")
-		return
-	}
-	resp.Diagnostics.Append(resp.State.Set(ctx, &plan)...)
-}
-
-func (r *gtmTypedWorkspaceEntityResource) Read(ctx context.Context, req resource.ReadRequest, resp *resource.ReadResponse) {
-	var state gtmTypedWorkspaceEntityModel
-	resp.Diagnostics.Append(req.State.Get(ctx, &state)...)
-	if resp.Diagnostics.HasError() {
-		return
-	}
-	var out map[string]any
-	err := r.client.doJSON(ctx, http.MethodGet, gtmURL(state.Path.ValueString()), nil, &out, nil)
-	if errors.Is(err, errNotFound) {
-		resp.State.RemoveResource(ctx)
-		return
-	}
-	if err != nil {
-		resp.Diagnostics.AddError("Unable to read GTM workspace entity", err.Error())
-		return
-	}
-	applyGTMRemoteTypedFields(&state, r.kind, out)
-	resp.Diagnostics.Append(resp.State.Set(ctx, &state)...)
-}
-
-func (r *gtmTypedWorkspaceEntityResource) Update(ctx context.Context, req resource.UpdateRequest, resp *resource.UpdateResponse) {
-	var plan gtmTypedWorkspaceEntityModel
-	resp.Diagnostics.Append(req.Plan.Get(ctx, &plan)...)
-	if resp.Diagnostics.HasError() {
-		return
-	}
-	payload := buildGTMPayload(ctx, r.kind, plan)
-	if err := r.client.doJSON(ctx, http.MethodPut, gtmURL(plan.Path.ValueString()), payload, nil, nil); err != nil {
-		resp.Diagnostics.AddError("Unable to update GTM workspace entity", err.Error())
-		return
-	}
-	var out map[string]any
-	if err := r.client.doJSON(ctx, http.MethodGet, gtmURL(plan.Path.ValueString()), nil, &out, nil); err != nil {
-		resp.Diagnostics.AddError("Unable to read updated GTM workspace entity", err.Error())
-		return
-	}
-	applyGTMRemoteTypedFields(&plan, r.kind, out)
-	resp.Diagnostics.Append(resp.State.Set(ctx, &plan)...)
-}
-
-func (r *gtmTypedWorkspaceEntityResource) Delete(ctx context.Context, req resource.DeleteRequest, resp *resource.DeleteResponse) {
-	var state gtmTypedWorkspaceEntityModel
-	resp.Diagnostics.Append(req.State.Get(ctx, &state)...)
-	if resp.Diagnostics.HasError() {
-		return
-	}
-	err := r.client.doJSON(ctx, http.MethodDelete, gtmURL(state.Path.ValueString()), nil, nil, nil)
-	if err != nil && !errors.Is(err, errNotFound) {
-		resp.Diagnostics.AddError("Unable to delete GTM workspace entity", err.Error())
-	}
-}
-
-func (r *gtmTypedWorkspaceEntityResource) ImportState(ctx context.Context, req resource.ImportStateRequest, resp *resource.ImportStateResponse) {
-	parsed, err := parseGTMWorkspaceEntityPath(req.ID)
-	if err != nil {
-		resp.Diagnostics.AddError("Invalid GTM workspace entity import ID", err.Error())
-		return
-	}
-	if parsed.Kind != r.kind {
-		resp.Diagnostics.AddError("Invalid GTM workspace entity import ID", fmt.Sprintf("Expected %s path, got %s.", r.kind, parsed.Kind))
-		return
-	}
-	var out map[string]any
-	if err := r.client.doJSON(ctx, http.MethodGet, gtmURL(parsed.Path), nil, &out, nil); err != nil {
-		resp.Diagnostics.AddError("Unable to read imported GTM workspace entity", err.Error())
-		return
-	}
-	state := gtmTypedWorkspaceEntityModel{
-		ID:          types.StringValue(parsed.Path),
-		AccountID:   types.StringValue(parsed.AccountID),
-		ContainerID: types.StringValue(parsed.ContainerID),
-		WorkspaceID: types.StringValue(parsed.WorkspaceID),
-		Name:        types.StringValue(stringFromMap(out, "name")),
-		Type:        types.StringValue(stringFromMap(out, "type")),
-		Path:        types.StringValue(parsed.Path),
-	}
-	applyGTMRemoteTypedFields(&state, r.kind, out)
-	resp.Diagnostics.Append(resp.State.Set(ctx, &state)...)
+type gtmGoogleTagConfigModel struct {
+	ID           types.String `tfsdk:"id"`
+	AccountID    types.String `tfsdk:"account_id"`
+	ContainerID  types.String `tfsdk:"container_id"`
+	WorkspaceID  types.String `tfsdk:"workspace_id"`
+	Path         types.String `tfsdk:"path"`
+	GtagConfigID types.String `tfsdk:"gtag_config_id"`
+	Type         types.String `tfsdk:"type"`
+	TagID        types.String `tfsdk:"tag_id"`
 }
 
 func buildGTMPayload(ctx context.Context, kind string, m gtmTypedWorkspaceEntityModel) map[string]any {
 	payload := map[string]any{"name": m.Name.ValueString()}
 	if !m.Type.IsNull() && !m.Type.IsUnknown() && m.Type.ValueString() != "" {
-		payload["type"] = m.Type.ValueString()
+		payload["type"] = gtmAPIType(kind, m.Type.ValueString())
 	}
 	if !m.Notes.IsNull() && !m.Notes.IsUnknown() && m.Notes.ValueString() != "" {
 		payload["notes"] = m.Notes.ValueString()
@@ -282,11 +111,90 @@ func buildGTMPayload(ctx context.Context, kind string, m gtmTypedWorkspaceEntity
 	return payload
 }
 
+func buildGTMGA4EventTagPayload(ctx context.Context, m gtmGA4EventTagModel) map[string]any {
+	payload := map[string]any{
+		"name":            m.Name.ValueString(),
+		"type":            "gaawe",
+		"firingTriggerId": stringList(ctx, m.TriggerIDs),
+	}
+	if ids := stringList(ctx, m.BlockingTriggerIDs); len(ids) > 0 {
+		payload["blockingTriggerId"] = ids
+	}
+	if !m.Notes.IsNull() && !m.Notes.IsUnknown() && m.Notes.ValueString() != "" {
+		payload["notes"] = m.Notes.ValueString()
+	}
+	params := []any{}
+	params = appendGTMParam(params, "eventName", m.EventName)
+	params = appendGTMParam(params, "measurementIdOverride", m.MeasurementIDOverride)
+	if len(params) > 0 {
+		payload["parameter"] = params
+	}
+	return payload
+}
+
+func validateGTMGA4EventTag(m gtmGA4EventTagModel) error {
+	if m.MeasurementIDOverride.IsNull() || m.MeasurementIDOverride.IsUnknown() || m.MeasurementIDOverride.ValueString() == "" {
+		return fmt.Errorf("measurement_id_override is required for GTM GA4 event tags because the GTM gaawe template requires measurementIdOverride")
+	}
+	return nil
+}
+
+func buildGTMGoogleTagConfigPayload(m gtmGoogleTagConfigModel) map[string]any {
+	typeName := m.Type.ValueString()
+	if typeName == "" {
+		typeName = "google"
+	}
+	return map[string]any{
+		"type": typeName,
+		"parameter": []any{
+			map[string]any{"type": "template", "key": "tagId", "value": m.TagID.ValueString()},
+		},
+	}
+}
+
 func gtmMeasurementIDParamKey(tagType string) string {
 	if tagType == "gaawe" {
 		return "measurementIdOverride"
 	}
 	return "measurementId"
+}
+
+var gtmTriggerTypeAliases = map[string]string{
+	"ALL_ELEMENTS":    "allElements",
+	"CLICK":           "click",
+	"CUSTOM_EVENT":    "customEvent",
+	"DOM_READY":       "domReady",
+	"FORM_SUBMISSION": "formSubmission",
+	"HISTORY_CHANGE":  "historyChange",
+	"INIT":            "init",
+	"JS_ERROR":        "jsError",
+	"LINK_CLICK":      "linkClick",
+	"PAGEVIEW":        "pageview",
+	"TIMER":           "timer",
+	"WINDOW_LOADED":   "windowLoaded",
+}
+
+func gtmAPIType(kind, typeName string) string {
+	if kind != "trigger" {
+		return typeName
+	}
+	if value, ok := gtmTriggerTypeAliases[typeName]; ok {
+		return value
+	}
+	return typeName
+}
+
+func gtmStateType(kind string, prior types.String, remoteType string) string {
+	if remoteType == "" {
+		return ""
+	}
+	if kind == "trigger" && !prior.IsNull() && !prior.IsUnknown() {
+		priorType := prior.ValueString()
+		if priorType != "" && gtmAPIType(kind, priorType) == remoteType {
+			return priorType
+		}
+	}
+	return remoteType
 }
 
 func appendGTMParam(params []any, key string, value types.String) []any {
@@ -335,7 +243,7 @@ func applyGTMRemoteTypedFields(m *gtmTypedWorkspaceEntityModel, kind string, out
 		m.Name = types.StringValue(name)
 	}
 	if typeName := stringFromMap(out, "type"); typeName != "" {
-		m.Type = types.StringValue(typeName)
+		m.Type = types.StringValue(gtmStateType(kind, m.Type, typeName))
 	}
 	if notes := stringFromMap(out, "notes"); notes != "" {
 		m.Notes = types.StringValue(notes)
@@ -402,6 +310,78 @@ func applyGTMRemoteTypedFields(m *gtmTypedWorkspaceEntityModel, kind string, out
 			m.JavaScript = types.StringNull()
 		}
 	}
+}
+
+func applyGTMGA4EventTagRemote(m *gtmGA4EventTagModel, out map[string]any) {
+	if pathValue := stringFromMap(out, "path"); pathValue != "" {
+		m.ID = types.StringValue(pathValue)
+		m.Path = types.StringValue(pathValue)
+	}
+	if id := stringFromMap(out, "tagId"); id != "" {
+		m.EntityID = types.StringValue(id)
+	}
+	if name := stringFromMap(out, "name"); name != "" {
+		m.Name = types.StringValue(name)
+	}
+	if notes := stringFromMap(out, "notes"); notes != "" {
+		m.Notes = types.StringValue(notes)
+	} else {
+		m.Notes = types.StringNull()
+	}
+	m.TriggerIDs = stringListValueAllowEmpty(stringsFromAny(out["firingTriggerId"]))
+	m.BlockingTriggerIDs = stringListValue(stringsFromAny(out["blockingTriggerId"]))
+	params := gtmParamMap(out["parameter"])
+	if value := params["eventName"]; value != "" {
+		m.EventName = types.StringValue(value)
+	}
+	if value := params["measurementIdOverride"]; value != "" {
+		m.MeasurementIDOverride = types.StringValue(value)
+	} else {
+		m.MeasurementIDOverride = types.StringNull()
+	}
+}
+
+func applyGTMGoogleTagConfigRemote(m *gtmGoogleTagConfigModel, out map[string]any) {
+	if pathValue := stringFromMap(out, "path"); pathValue != "" {
+		m.ID = types.StringValue(pathValue)
+		m.Path = types.StringValue(pathValue)
+	}
+	if id := stringFromMap(out, "gtagConfigId"); id != "" {
+		m.GtagConfigID = types.StringValue(id)
+	}
+	if typeName := stringFromMap(out, "type"); typeName != "" {
+		m.Type = types.StringValue(typeName)
+	} else if m.Type.IsNull() || m.Type.IsUnknown() {
+		m.Type = types.StringValue("google")
+	}
+	if tagID := gtmParamMap(out["parameter"])["tagId"]; tagID != "" {
+		m.TagID = types.StringValue(tagID)
+	}
+}
+
+func googleTagConfigsSupported(out map[string]any) (bool, bool) {
+	features, _ := out["features"].(map[string]any)
+	if features == nil {
+		return false, false
+	}
+	supported, ok := features["supportGtagConfigs"].(bool)
+	return supported, ok
+}
+
+func existingGoogleTagConfigPath(out map[string]any, tagID string) string {
+	for _, key := range []string{"gtagConfig", "gtagConfigs", "gtag_config"} {
+		items, _ := out[key].([]any)
+		for _, item := range items {
+			config, _ := item.(map[string]any)
+			if gtmParamMap(config["parameter"])["tagId"] == tagID {
+				return stringFromMap(config, "path")
+			}
+		}
+	}
+	if gtmParamMap(out["parameter"])["tagId"] == tagID {
+		return stringFromMap(out, "path")
+	}
+	return ""
 }
 
 func gtmParamMap(raw any) map[string]string {
@@ -505,4 +485,19 @@ func stringListValueAllowEmpty(values []string) types.List {
 func stringFromMap(m map[string]any, key string) string {
 	value, _ := m[key].(string)
 	return value
+}
+
+func gtmEntityCollection(kind string) (string, error) {
+	switch kind {
+	case "tag":
+		return "tags", nil
+	case "trigger":
+		return "triggers", nil
+	case "variable":
+		return "variables", nil
+	case "folder":
+		return "folders", nil
+	default:
+		return "", fmt.Errorf("supported values are tag, trigger, variable, folder")
+	}
 }

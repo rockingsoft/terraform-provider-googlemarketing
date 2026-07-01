@@ -2,11 +2,19 @@ package provider
 
 import (
 	"context"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 )
+
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) {
+	return f(req)
+}
 
 func TestURLConstruction(t *testing.T) {
 	if got, want := gtmURL("/accounts/1"), gtmBaseURL+"/accounts/1"; got != want {
@@ -56,5 +64,127 @@ func TestDoJSONRetriesRetryableStatus(t *testing.T) {
 	}
 	if out["ok"] != true {
 		t.Fatalf("unexpected response: %#v", out)
+	}
+}
+
+func TestDoJSONAppliesGTMRateLimit(t *testing.T) {
+	client := &marketingClient{
+		httpClient: &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Header:     make(http.Header),
+				Body:       io.NopCloser(strings.NewReader(`{"ok":true}`)),
+				Request:    req,
+			}, nil
+		})},
+		gtmLimiter: newGTMRateLimiter(25 * time.Millisecond),
+	}
+
+	start := time.Now()
+	if err := client.doJSON(context.Background(), http.MethodGet, gtmURL("accounts"), nil, nil, nil); err != nil {
+		t.Fatalf("first doJSON returned error: %v", err)
+	}
+	if err := client.doJSON(context.Background(), http.MethodGet, gtmURL("accounts"), nil, nil, nil); err != nil {
+		t.Fatalf("second doJSON returned error: %v", err)
+	}
+	if elapsed := time.Since(start); elapsed < 20*time.Millisecond {
+		t.Fatalf("elapsed = %s, want GTM rate limit delay", elapsed)
+	}
+}
+
+func TestDoJSONDoesNotRateLimitNonGTM(t *testing.T) {
+	client := &marketingClient{
+		httpClient: &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Header:     make(http.Header),
+				Body:       io.NopCloser(strings.NewReader(`{"ok":true}`)),
+				Request:    req,
+			}, nil
+		})},
+		gtmLimiter: newGTMRateLimiter(time.Hour),
+	}
+
+	start := time.Now()
+	if err := client.doJSON(context.Background(), http.MethodGet, gaURL("properties"), nil, nil, nil); err != nil {
+		t.Fatalf("first doJSON returned error: %v", err)
+	}
+	if err := client.doJSON(context.Background(), http.MethodGet, gaURL("properties"), nil, nil, nil); err != nil {
+		t.Fatalf("second doJSON returned error: %v", err)
+	}
+	if elapsed := time.Since(start); elapsed > 100*time.Millisecond {
+		t.Fatalf("elapsed = %s, non-GTM requests should not be GTM rate limited", elapsed)
+	}
+}
+
+func TestGTMCollectionCacheReusesListResponse(t *testing.T) {
+	requests := 0
+	client := &marketingClient{
+		httpClient: &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+			requests++
+			if got, want := req.URL.Path, "/tagmanager/v2/accounts/1/containers/2/workspaces/3/tags"; got != want {
+				t.Fatalf("request path = %q, want %q", got, want)
+			}
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Header:     make(http.Header),
+				Body: io.NopCloser(strings.NewReader(`{
+					"tag": [
+						{"path":"accounts/1/containers/2/workspaces/3/tags/4","tagId":"4","name":"A"},
+						{"path":"accounts/1/containers/2/workspaces/3/tags/5","tagId":"5","name":"B"}
+					]
+				}`)),
+				Request: req,
+			}, nil
+		})},
+		gtmLimiter: newGTMRateLimiter(0),
+		gtmCache:   newGTMCollectionCache(),
+	}
+
+	first, found, err := client.getGTMWorkspaceEntity(context.Background(), "accounts/1/containers/2/workspaces/3/tags/4")
+	if err != nil || !found {
+		t.Fatalf("first lookup found=%t err=%v", found, err)
+	}
+	if first["name"] != "A" {
+		t.Fatalf("unexpected first item: %#v", first)
+	}
+	second, found, err := client.getGTMWorkspaceEntity(context.Background(), "accounts/1/containers/2/workspaces/3/tags/5")
+	if err != nil || !found {
+		t.Fatalf("second lookup found=%t err=%v", found, err)
+	}
+	if second["name"] != "B" {
+		t.Fatalf("unexpected second item: %#v", second)
+	}
+	if requests != 1 {
+		t.Fatalf("requests = %d, want 1", requests)
+	}
+}
+
+func TestGTMCollectionInvalidationReloadsListResponse(t *testing.T) {
+	requests := 0
+	client := &marketingClient{
+		httpClient: &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+			requests++
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Header:     make(http.Header),
+				Body:       io.NopCloser(strings.NewReader(`{"tag":[{"path":"accounts/1/containers/2/workspaces/3/tags/4","tagId":"4"}]}`)),
+				Request:    req,
+			}, nil
+		})},
+		gtmLimiter: newGTMRateLimiter(0),
+		gtmCache:   newGTMCollectionCache(),
+	}
+
+	pathValue := "accounts/1/containers/2/workspaces/3/tags/4"
+	if _, found, err := client.getGTMWorkspaceEntity(context.Background(), pathValue); err != nil || !found {
+		t.Fatalf("first lookup found=%t err=%v", found, err)
+	}
+	client.invalidateGTMWorkspaceEntityCollection(pathValue)
+	if _, found, err := client.getGTMWorkspaceEntity(context.Background(), pathValue); err != nil || !found {
+		t.Fatalf("second lookup found=%t err=%v", found, err)
+	}
+	if requests != 2 {
+		t.Fatalf("requests = %d, want 2", requests)
 	}
 }

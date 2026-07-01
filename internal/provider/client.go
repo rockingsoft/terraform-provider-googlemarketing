@@ -8,7 +8,9 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"golang.org/x/oauth2"
@@ -25,7 +27,9 @@ var retrySleep = time.Sleep
 
 var googleScopes = []string{
 	"https://www.googleapis.com/auth/tagmanager.edit.containers",
+	"https://www.googleapis.com/auth/tagmanager.edit.containerversions",
 	"https://www.googleapis.com/auth/tagmanager.manage.accounts",
+	"https://www.googleapis.com/auth/tagmanager.publish",
 	"https://www.googleapis.com/auth/analytics.edit",
 	"https://www.googleapis.com/auth/adwords",
 }
@@ -36,6 +40,7 @@ type clientConfig struct {
 	AdsDeveloperToken  string
 	AdsLoginCustomerID string
 	AdsAPIVersion      string
+	GTMRequestInterval time.Duration
 }
 
 type marketingClient struct {
@@ -43,6 +48,8 @@ type marketingClient struct {
 	adsDeveloperToken  string
 	adsLoginCustomerID string
 	adsAPIVersion      string
+	gtmLimiter         *gtmRateLimiter
+	gtmCache           *gtmCollectionCache
 }
 
 func newClient(ctx context.Context, cfg clientConfig) (*marketingClient, error) {
@@ -78,6 +85,8 @@ func newClient(ctx context.Context, cfg clientConfig) (*marketingClient, error) 
 		adsDeveloperToken:  cfg.AdsDeveloperToken,
 		adsLoginCustomerID: cfg.AdsLoginCustomerID,
 		adsAPIVersion:      cfg.AdsAPIVersion,
+		gtmLimiter:         newGTMRateLimiter(cfg.GTMRequestInterval),
+		gtmCache:           newGTMCollectionCache(),
 	}, nil
 }
 
@@ -93,6 +102,12 @@ func (c *marketingClient) doJSON(ctx context.Context, method, url string, in any
 
 	var lastErr error
 	for attempt := 0; attempt < 4; attempt++ {
+		if c.gtmLimiter != nil && isGTMURL(url) {
+			if err := c.gtmLimiter.wait(ctx); err != nil {
+				return err
+			}
+		}
+
 		var body io.Reader
 		if bodyBytes != nil {
 			body = bytes.NewReader(bodyBytes)
@@ -147,6 +162,10 @@ func gtmURL(path string) string {
 	return gtmBaseURL + "/" + strings.TrimPrefix(path, "/")
 }
 
+func isGTMURL(url string) bool {
+	return strings.HasPrefix(url, gtmBaseURL+"/") || url == gtmBaseURL
+}
+
 func gaURL(path string) string {
 	return gaBaseURL + "/" + strings.TrimPrefix(path, "/")
 }
@@ -172,3 +191,129 @@ func retryableStatus(status int) bool {
 }
 
 var errNotFound = fmt.Errorf("not found")
+
+const defaultGTMRequestInterval = 4 * time.Second
+
+type gtmRateLimiter struct {
+	interval time.Duration
+	mu       sync.Mutex
+	next     time.Time
+}
+
+func newGTMRateLimiter(interval time.Duration) *gtmRateLimiter {
+	if interval < 0 {
+		interval = 0
+	}
+	return &gtmRateLimiter{interval: interval}
+}
+
+func (l *gtmRateLimiter) wait(ctx context.Context) error {
+	if l.interval == 0 {
+		return nil
+	}
+
+	l.mu.Lock()
+	now := time.Now()
+	waitUntil := l.next
+	if waitUntil.Before(now) {
+		waitUntil = now
+	}
+	l.next = waitUntil.Add(l.interval)
+	l.mu.Unlock()
+
+	delay := time.Until(waitUntil)
+	if delay <= 0 {
+		return nil
+	}
+	timer := time.NewTimer(delay)
+	defer timer.Stop()
+	select {
+	case <-timer.C:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+type gtmCollectionCache struct {
+	mu          sync.Mutex
+	collections map[string]map[string]map[string]any
+	containers  map[string]containerSupportCacheEntry
+}
+
+type containerSupportCacheEntry struct {
+	supported bool
+	ok        bool
+}
+
+func newGTMCollectionCache() *gtmCollectionCache {
+	return &gtmCollectionCache{
+		collections: map[string]map[string]map[string]any{},
+		containers:  map[string]containerSupportCacheEntry{},
+	}
+}
+
+func (c *gtmCollectionCache) getCollection(collectionPath string) (map[string]map[string]any, bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	items, ok := c.collections[collectionPath]
+	if !ok {
+		return nil, false
+	}
+	clone := make(map[string]map[string]any, len(items))
+	for path, item := range items {
+		clone[path] = cloneMap(item)
+	}
+	return clone, true
+}
+
+func (c *gtmCollectionCache) setCollection(collectionPath string, items map[string]map[string]any) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	clone := make(map[string]map[string]any, len(items))
+	for path, item := range items {
+		clone[path] = cloneMap(item)
+	}
+	c.collections[collectionPath] = clone
+}
+
+func (c *gtmCollectionCache) invalidateCollection(collectionPath string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	delete(c.collections, collectionPath)
+}
+
+func (c *gtmCollectionCache) getContainerSupport(containerPath string) (bool, bool, bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	entry, found := c.containers[containerPath]
+	return entry.supported, entry.ok, found
+}
+
+func (c *gtmCollectionCache) setContainerSupport(containerPath string, supported, ok bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.containers[containerPath] = containerSupportCacheEntry{supported: supported, ok: ok}
+}
+
+func cloneMap(in map[string]any) map[string]any {
+	out := make(map[string]any, len(in))
+	for k, v := range in {
+		out[k] = v
+	}
+	return out
+}
+
+func parseDurationMillis(raw string) (time.Duration, error) {
+	if raw == "" {
+		return 0, nil
+	}
+	ms, err := strconv.Atoi(raw)
+	if err != nil {
+		return 0, err
+	}
+	if ms < 0 {
+		return 0, fmt.Errorf("must be greater than or equal to 0")
+	}
+	return time.Duration(ms) * time.Millisecond, nil
+}

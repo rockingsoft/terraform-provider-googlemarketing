@@ -2,7 +2,9 @@ package provider
 
 import (
 	"context"
+	"fmt"
 	"os"
+	"time"
 
 	"github.com/hashicorp/terraform-plugin-framework/datasource"
 	"github.com/hashicorp/terraform-plugin-framework/path"
@@ -26,6 +28,7 @@ type providerModel struct {
 	AdsDeveloperToken  types.String `tfsdk:"ads_developer_token"`
 	AdsLoginCustomerID types.String `tfsdk:"ads_login_customer_id"`
 	AdsAPIVersion      types.String `tfsdk:"ads_api_version"`
+	GTMRequestInterval types.Int64  `tfsdk:"gtm_request_interval_ms"`
 }
 
 func (p *marketingProvider) Metadata(_ context.Context, _ provider.MetadataRequest, resp *provider.MetadataResponse) {
@@ -58,6 +61,10 @@ func (p *marketingProvider) Schema(_ context.Context, _ provider.SchemaRequest, 
 				Optional:    true,
 				Description: "Google Ads API version path segment, for example v24. Defaults to GOOGLE_ADS_API_VERSION or v24.",
 			},
+			"gtm_request_interval_ms": schema.Int64Attribute{
+				Optional:    true,
+				Description: "Minimum delay in milliseconds between Google Tag Manager API requests. Defaults to GOOGLEMARKETING_GTM_REQUEST_INTERVAL_MS or 4000 to respect GTM's 25 requests per 100 seconds project quota. Set to 0 to disable provider-side pacing.",
+			},
 		},
 	}
 }
@@ -69,12 +76,19 @@ func (p *marketingProvider) Configure(ctx context.Context, req provider.Configur
 		return
 	}
 
+	gtmInterval, err := gtmRequestIntervalFrom(model.GTMRequestInterval, os.Getenv("GOOGLEMARKETING_GTM_REQUEST_INTERVAL_MS"))
+	if err != nil {
+		resp.Diagnostics.AddAttributeError(path.Root("gtm_request_interval_ms"), "Invalid GTM request interval", err.Error())
+		return
+	}
+
 	cfg := clientConfig{
 		CredentialsFile:    stringFrom(model.CredentialsFile, os.Getenv("GOOGLE_APPLICATION_CREDENTIALS")),
 		CredentialsJSON:    stringFrom(model.CredentialsJSON, os.Getenv("GOOGLEMARKETING_CREDENTIALS_JSON")),
 		AdsDeveloperToken:  stringFrom(model.AdsDeveloperToken, os.Getenv("GOOGLE_ADS_DEVELOPER_TOKEN")),
 		AdsLoginCustomerID: stringFrom(model.AdsLoginCustomerID, os.Getenv("GOOGLE_ADS_LOGIN_CUSTOMER_ID")),
 		AdsAPIVersion:      stringFrom(model.AdsAPIVersion, os.Getenv("GOOGLE_ADS_API_VERSION")),
+		GTMRequestInterval: gtmInterval,
 	}
 	if cfg.AdsAPIVersion == "" {
 		cfg.AdsAPIVersion = "v24"
@@ -92,15 +106,7 @@ func (p *marketingProvider) Configure(ctx context.Context, req provider.Configur
 
 func (p *marketingProvider) Resources(_ context.Context) []func() resource.Resource {
 	return []func() resource.Resource{
-		NewGTMWorkspaceEntityResource,
-		NewGTMVariableResource,
-		NewGTMTriggerResource,
-		NewGTMTagResource,
-		NewGTMGoogleTagConfigResource,
-		NewGTMGA4EventTagResource,
-		NewGTMFolderResource,
-		NewGTMContainerVersionResource,
-		NewGTMVersionPublicationResource,
+		NewGTMContainerReleaseResource,
 		NewGA4AdminResource,
 		NewGA4PropertyResource,
 		NewGA4WebDataStreamResource,
@@ -116,7 +122,6 @@ func (p *marketingProvider) Resources(_ context.Context) []func() resource.Resou
 func (p *marketingProvider) DataSources(_ context.Context) []func() datasource.DataSource {
 	return []func() datasource.DataSource{
 		NewGTMAccountsDataSource,
-		NewGTMWorkspacesDataSource,
 		NewAdsAccessibleCustomersDataSource,
 	}
 }
@@ -126,4 +131,17 @@ func stringFrom(v types.String, fallback string) string {
 		return v.ValueString()
 	}
 	return fallback
+}
+
+func gtmRequestIntervalFrom(v types.Int64, fallback string) (time.Duration, error) {
+	if !v.IsNull() && !v.IsUnknown() {
+		if v.ValueInt64() < 0 {
+			return 0, fmt.Errorf("must be greater than or equal to 0")
+		}
+		return time.Duration(v.ValueInt64()) * time.Millisecond, nil
+	}
+	if fallback != "" {
+		return parseDurationMillis(fallback)
+	}
+	return defaultGTMRequestInterval, nil
 }

@@ -6,7 +6,12 @@ variable "gtm_container_id" {
   type = string
 }
 
-variable "gtm_workspace_id" {
+variable "gtm_workspace_name" {
+  type    = string
+  default = "Default Workspace"
+}
+
+variable "release_revision" {
   type = string
 }
 

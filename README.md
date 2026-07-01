@@ -1,19 +1,19 @@
 # Terraform Provider Google Marketing
 
-Terraform provider for managing Google Tag Manager and Google Analytics 4 Admin with typed resources. The primary UX does not require users to know or write Google API payloads.
+Terraform provider for managing Google Tag Manager releases, Google Analytics 4 Admin, and selected Google Ads API resources.
 
 ## Local Setup
 
 ```bash
-git clone https://github.com/rockingsoft/terraform-googlemarketing-provider.git
-cd terraform-googlemarketing-provider
+git clone https://github.com/rockingsoft/terraform-provider-googlemarketing.git
+cd terraform-provider-googlemarketing
 go mod tidy
 go install .
 
 export GOOGLEMARKETING_PLATFORM="$(go env GOOS)_$(go env GOARCH)"
-mkdir -p "$HOME/.terraform.d/plugins/registry.terraform.io/rockingsoft/googlemarketing/0.1.0/$GOOGLEMARKETING_PLATFORM"
+mkdir -p "$HOME/.terraform.d/plugins/registry.terraform.io/rockingsoft/googlemarketing/1.0.0/$GOOGLEMARKETING_PLATFORM"
 cp "$(go env GOPATH)/bin/terraform-provider-googlemarketing" \
-  "$HOME/.terraform.d/plugins/registry.terraform.io/rockingsoft/googlemarketing/0.1.0/$GOOGLEMARKETING_PLATFORM/terraform-provider-googlemarketing_v0.1.0"
+  "$HOME/.terraform.d/plugins/registry.terraform.io/rockingsoft/googlemarketing/1.0.0/$GOOGLEMARKETING_PLATFORM/terraform-provider-googlemarketing_v1.0.0"
 ```
 
 ## Credentials
@@ -28,7 +28,7 @@ Authenticate with Application Default Credentials:
 
 ```bash
 gcloud auth application-default login \
-  --scopes=https://www.googleapis.com/auth/cloud-platform,https://www.googleapis.com/auth/tagmanager.edit.containers,https://www.googleapis.com/auth/tagmanager.manage.accounts,https://www.googleapis.com/auth/analytics.edit,https://www.googleapis.com/auth/adwords
+  --scopes=https://www.googleapis.com/auth/cloud-platform,https://www.googleapis.com/auth/tagmanager.edit.containers,https://www.googleapis.com/auth/tagmanager.edit.containerversions,https://www.googleapis.com/auth/tagmanager.manage.accounts,https://www.googleapis.com/auth/tagmanager.publish,https://www.googleapis.com/auth/analytics.edit,https://www.googleapis.com/auth/adwords
 ```
 
 You can also use Google JSON credentials:
@@ -44,7 +44,7 @@ terraform {
   required_providers {
     googlemarketing = {
       source  = "rockingsoft/googlemarketing"
-      version = "0.1.0"
+      version = "1.0.0"
     }
   }
 }
@@ -52,7 +52,17 @@ terraform {
 provider "googlemarketing" {}
 ```
 
-## GA4 and GTM
+Google Tag Manager enforces a low project quota. By default the provider spaces GTM API calls by 4000 ms. Override this only if your project has a higher quota:
+
+```hcl
+provider "googlemarketing" {
+  gtm_request_interval_ms = 4000
+}
+```
+
+You can also set `GOOGLEMARKETING_GTM_REQUEST_INTERVAL_MS`. Use `0` to disable provider-side GTM pacing.
+
+## GA4 and GTM Release
 
 ```hcl
 resource "googlemarketing_ga4_web_data_stream" "web" {
@@ -61,72 +71,43 @@ resource "googlemarketing_ga4_web_data_stream" "web" {
   default_uri  = var.site_url
 }
 
-resource "googlemarketing_gtm_google_tag_config" "ga4" {
-  account_id    = var.gtm_account_id
-  container_id  = var.gtm_container_id
-  workspace_id  = var.gtm_workspace_id
-  tag_id        = googlemarketing_ga4_web_data_stream.web.measurement_id
-}
+resource "googlemarketing_gtm_container_release" "tracking" {
+  account_id     = var.gtm_account_id
+  container_id   = var.gtm_container_id
+  workspace_name = "Default Workspace"
+  name           = "Terraform ${var.release_revision}"
+  notes          = "Published by Terraform"
+  revision       = var.release_revision
 
-resource "googlemarketing_gtm_trigger" "purchase" {
-  account_id        = var.gtm_account_id
-  container_id      = var.gtm_container_id
-  workspace_id      = var.gtm_workspace_id
-  name              = "Purchase event"
-  type              = "CUSTOM_EVENT"
-  custom_event_name = "purchase"
-}
+  trigger {
+    key               = "purchase"
+    name              = "Event - purchase"
+    type              = "customEvent"
+    custom_event_name = "purchase"
+  }
 
-resource "googlemarketing_gtm_ga4_event_tag" "purchase" {
-  account_id   = var.gtm_account_id
-  container_id = var.gtm_container_id
-  workspace_id = var.gtm_workspace_id
-  name         = "GA4 purchase event"
-  event_name   = "purchase"
-  trigger_ids  = [googlemarketing_gtm_trigger.purchase.entity_id]
+  ga4_event_tag {
+    key                     = "ga4_purchase"
+    name                    = "GA4 - purchase"
+    event_name              = "purchase"
+    measurement_id_override = googlemarketing_ga4_web_data_stream.web.measurement_id
+    trigger_keys            = ["purchase"]
+  }
 }
 
 resource "googlemarketing_ga4_key_event" "purchase" {
   parent_id  = var.ga4_property_id
   event_name = "purchase"
 }
-
-resource "googlemarketing_gtm_container_version" "release" {
-  account_id   = var.gtm_account_id
-  container_id = var.gtm_container_id
-  workspace_id = var.gtm_workspace_id
-  name         = "Terraform release"
-  notes        = "Published by Terraform"
-  revision     = googlemarketing_gtm_ga4_event_tag.purchase.id
-}
-
-resource "googlemarketing_gtm_version_publication" "release" {
-  account_id   = var.gtm_account_id
-  container_id = var.gtm_container_id
-  version_id   = googlemarketing_gtm_container_version.release.container_version_id
-}
 ```
 
-If you manage the GA4 property with this provider and need to keep a numeric output, use `property_id`:
+`googlemarketing_gtm_container_release` treats a GTM workspace as an editable release area. Terraform state is anchored to the published container version, not to workspace-scoped tag, trigger, or variable IDs that can rotate after publish.
 
-```hcl
-output "ga4_property_id" {
-  value = googlemarketing_ga4_property.landing.property_id
-}
-```
-
-## Typed Resources
+## Resources
 
 GTM:
 
-- `googlemarketing_gtm_tag`
-- `googlemarketing_gtm_google_tag_config`
-- `googlemarketing_gtm_ga4_event_tag`
-- `googlemarketing_gtm_trigger`
-- `googlemarketing_gtm_variable`
-- `googlemarketing_gtm_folder`
-- `googlemarketing_gtm_container_version`
-- `googlemarketing_gtm_version_publication`
+- `googlemarketing_gtm_container_release`
 
 GA4:
 
@@ -137,7 +118,15 @@ GA4:
 - `googlemarketing_ga4_custom_metric`
 - `googlemarketing_ga4_data_retention_settings`
 
-Legacy generic resources are still available for compatibility, but they are not the recommended path.
+Google Ads:
+
+- `googlemarketing_ads_conversion_action`
+- `googlemarketing_ads_mutate`
+
+## Data Sources
+
+- `googlemarketing_gtm_accounts`
+- `googlemarketing_ads_accessible_customers`
 
 ## Validation
 
@@ -146,16 +135,3 @@ go test ./...
 terraform init
 terraform plan
 ```
-
-Acceptance tests against real APIs:
-
-```bash
-export GOOGLEMARKETING_ACC=1
-export GOOGLEMARKETING_GTM_ACCOUNT_ID="..."
-export GOOGLEMARKETING_GTM_CONTAINER_ID="..."
-export GOOGLEMARKETING_GTM_WORKSPACE_ID="..."
-export GOOGLEMARKETING_ACC_MEASUREMENT_ID="G-..."
-go test ./internal/provider -run TestAcc -count=1 -v
-```
-
-For Google Tag Manager, the recommended GA4 flow is to create `googlemarketing_gtm_google_tag_config` first and then create events with `googlemarketing_gtm_ga4_event_tag`. The generic `googlemarketing_gtm_tag` resource keeps legacy compatibility, including `measurementIdOverride` for `type = "gaawe"`.
