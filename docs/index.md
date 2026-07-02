@@ -9,7 +9,7 @@ terraform {
   required_providers {
     googlemarketing = {
       source  = "rockingsoft/googlemarketing"
-      version = "1.0.0"
+      version = "1.0.1"
     }
   }
 }
@@ -66,6 +66,8 @@ resource "googlemarketing_gtm_container_release" "tracking" {
   }
 }
 ```
+
+Set `release_revision` from the desired GTM release content only. Do not use a global deploy hash if unrelated changes should not publish a new GTM version.
 
 ## Resources
 

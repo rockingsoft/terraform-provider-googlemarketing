@@ -11,9 +11,9 @@ go mod tidy
 go install .
 
 export GOOGLEMARKETING_PLATFORM="$(go env GOOS)_$(go env GOARCH)"
-mkdir -p "$HOME/.terraform.d/plugins/registry.terraform.io/rockingsoft/googlemarketing/1.0.0/$GOOGLEMARKETING_PLATFORM"
+mkdir -p "$HOME/.terraform.d/plugins/registry.terraform.io/rockingsoft/googlemarketing/1.0.1/$GOOGLEMARKETING_PLATFORM"
 cp "$(go env GOPATH)/bin/terraform-provider-googlemarketing" \
-  "$HOME/.terraform.d/plugins/registry.terraform.io/rockingsoft/googlemarketing/1.0.0/$GOOGLEMARKETING_PLATFORM/terraform-provider-googlemarketing_v1.0.0"
+  "$HOME/.terraform.d/plugins/registry.terraform.io/rockingsoft/googlemarketing/1.0.1/$GOOGLEMARKETING_PLATFORM/terraform-provider-googlemarketing_v1.0.1"
 ```
 
 ## Credentials
@@ -44,7 +44,7 @@ terraform {
   required_providers {
     googlemarketing = {
       source  = "rockingsoft/googlemarketing"
-      version = "1.0.0"
+      version = "1.0.1"
     }
   }
 }
@@ -102,6 +102,8 @@ resource "googlemarketing_ga4_key_event" "purchase" {
 ```
 
 `googlemarketing_gtm_container_release` treats a GTM workspace as an editable release area. Terraform state is anchored to the published container version, not to workspace-scoped tag, trigger, or variable IDs that can rotate after publish.
+
+Use a `release_revision` value derived only from the desired GTM release content. A global deploy hash can publish a new GTM version for unrelated application, DNS, secret, or runtime changes.
 
 ## Resources
 

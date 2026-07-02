@@ -2,9 +2,11 @@
 
 Publishes a complete Google Tag Manager container release from logical variables, triggers, and tags.
 
-This resource is the supported GTM workflow in v1.0.0. It uses the current workspace named by `workspace_name` as an editable release area, resolves internal references by stable keys, creates a container version, and publishes it when `publish = true`.
+This resource is the supported GTM workflow. It uses the current workspace named by `workspace_name` as an editable release area, resolves internal references by stable keys, creates a container version, and publishes it when `publish = true`.
 
 Terraform state is anchored to the published container version. It is not anchored to workspace-scoped tag, trigger, or variable IDs, because GTM can rotate workspace IDs after publication.
+
+Changes to release inputs publish a new GTM container version. Set `revision` to a fingerprint of the desired GTM release content only; do not use a global deploy hash if unrelated application, DNS, secret, or runtime changes should not publish GTM.
 
 ## Example
 

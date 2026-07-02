@@ -9,6 +9,8 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/resource"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/booldefault"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/boolplanmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/listplanmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/types"
@@ -99,23 +101,23 @@ func (r *gtmContainerReleaseResource) Schema(_ context.Context, _ resource.Schem
 		Description: "Publishes a complete Google Tag Manager container release from logical variables, triggers, and tags.",
 		Attributes: map[string]schema.Attribute{
 			"id":                   releaseComputedString("Published GTM version path."),
-			"account_id":           schema.StringAttribute{Required: true},
-			"container_id":         schema.StringAttribute{Required: true},
-			"workspace_name":       schema.StringAttribute{Optional: true, Description: "Workspace name to use as the editable release workspace. Defaults to Default Workspace."},
-			"name":                 schema.StringAttribute{Required: true},
-			"notes":                schema.StringAttribute{Optional: true},
-			"revision":             schema.StringAttribute{Required: true, Description: "Caller-controlled release fingerprint. A changed revision publishes a new GTM version."},
-			"publish":              schema.BoolAttribute{Optional: true, Computed: true, Default: booldefault.StaticBool(true), Description: "Whether to publish the created container version. Defaults to true."},
+			"account_id":           releaseRequiredString(),
+			"container_id":         releaseRequiredString(),
+			"workspace_name":       releaseOptionalString("Workspace name to use as the editable release workspace. Defaults to Default Workspace."),
+			"name":                 releaseRequiredString(),
+			"notes":                releaseOptionalString(""),
+			"revision":             releaseRequiredStringWithDescription("Caller-controlled release fingerprint. A changed revision publishes a new GTM version."),
+			"publish":              releasePublishAttribute(),
 			"workspace_id_used":    releaseComputedString("Workspace ID used for the most recent release operation."),
 			"container_version_id": releaseComputedString("Published or created container version ID."),
 			"version_path":         releaseComputedString("GTM container version path."),
 			"published":            schema.BoolAttribute{Computed: true},
 		},
 		Blocks: map[string]schema.Block{
-			"variable":      schema.ListNestedBlock{NestedObject: schema.NestedBlockObject{Attributes: gtmReleaseVariableAttributes()}},
-			"trigger":       schema.ListNestedBlock{NestedObject: schema.NestedBlockObject{Attributes: gtmReleaseTriggerAttributes()}},
-			"tag":           schema.ListNestedBlock{NestedObject: schema.NestedBlockObject{Attributes: gtmReleaseTagAttributes()}},
-			"ga4_event_tag": schema.ListNestedBlock{NestedObject: schema.NestedBlockObject{Attributes: gtmReleaseGA4TagAttributes()}},
+			"variable":      releaseListNestedBlock(gtmReleaseVariableAttributes()),
+			"trigger":       releaseListNestedBlock(gtmReleaseTriggerAttributes()),
+			"tag":           releaseListNestedBlock(gtmReleaseTagAttributes()),
+			"ga4_event_tag": releaseListNestedBlock(gtmReleaseGA4TagAttributes()),
 		},
 	}
 }
@@ -124,8 +126,50 @@ func releaseComputedString(description string) schema.StringAttribute {
 	return schema.StringAttribute{
 		Computed:    true,
 		Description: description,
+	}
+}
+
+func releaseRequiredString() schema.StringAttribute {
+	return releaseRequiredStringWithDescription("")
+}
+
+func releaseRequiredStringWithDescription(description string) schema.StringAttribute {
+	return schema.StringAttribute{
+		Required:    true,
+		Description: description,
 		PlanModifiers: []planmodifier.String{
-			stringplanmodifier.UseStateForUnknown(),
+			stringplanmodifier.RequiresReplace(),
+		},
+	}
+}
+
+func releaseOptionalString(description string) schema.StringAttribute {
+	return schema.StringAttribute{
+		Optional:    true,
+		Description: description,
+		PlanModifiers: []planmodifier.String{
+			stringplanmodifier.RequiresReplace(),
+		},
+	}
+}
+
+func releasePublishAttribute() schema.BoolAttribute {
+	return schema.BoolAttribute{
+		Optional:    true,
+		Computed:    true,
+		Default:     booldefault.StaticBool(true),
+		Description: "Whether to publish the created container version. Defaults to true.",
+		PlanModifiers: []planmodifier.Bool{
+			boolplanmodifier.RequiresReplace(),
+		},
+	}
+}
+
+func releaseListNestedBlock(attributes map[string]schema.Attribute) schema.ListNestedBlock {
+	return schema.ListNestedBlock{
+		NestedObject: schema.NestedBlockObject{Attributes: attributes},
+		PlanModifiers: []planmodifier.List{
+			listplanmodifier.RequiresReplace(),
 		},
 	}
 }

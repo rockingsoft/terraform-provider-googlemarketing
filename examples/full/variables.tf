@@ -12,7 +12,8 @@ variable "gtm_workspace_name" {
 }
 
 variable "release_revision" {
-  type = string
+  type        = string
+  description = "Fingerprint of the desired GTM release content. Avoid global deploy hashes unless every deploy should publish GTM."
 }
 
 variable "ga4_property_id" {
