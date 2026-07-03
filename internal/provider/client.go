@@ -50,6 +50,9 @@ type marketingClient struct {
 	adsAPIVersion      string
 	gtmLimiter         *gtmRateLimiter
 	gtmCache           *gtmCollectionCache
+	adsMutationLocks   *keyedMutex
+	dirtyMu            sync.Mutex
+	dirtyContainers    map[string]bool
 }
 
 func newClient(ctx context.Context, cfg clientConfig) (*marketingClient, error) {
@@ -87,6 +90,7 @@ func newClient(ctx context.Context, cfg clientConfig) (*marketingClient, error) 
 		adsAPIVersion:      cfg.AdsAPIVersion,
 		gtmLimiter:         newGTMRateLimiter(cfg.GTMRequestInterval),
 		gtmCache:           newGTMCollectionCache(),
+		adsMutationLocks:   newKeyedMutex(),
 	}, nil
 }
 
@@ -192,6 +196,31 @@ func retryableStatus(status int) bool {
 
 var errNotFound = fmt.Errorf("not found")
 
+type keyedMutex struct {
+	mu    sync.Mutex
+	locks map[string]*sync.Mutex
+}
+
+func newKeyedMutex() *keyedMutex {
+	return &keyedMutex{locks: map[string]*sync.Mutex{}}
+}
+
+func (m *keyedMutex) lock(key string) func() {
+	if m == nil {
+		return func() {}
+	}
+	m.mu.Lock()
+	lock, ok := m.locks[key]
+	if !ok {
+		lock = &sync.Mutex{}
+		m.locks[key] = lock
+	}
+	m.mu.Unlock()
+
+	lock.Lock()
+	return lock.Unlock
+}
+
 const defaultGTMRequestInterval = 4 * time.Second
 
 type gtmRateLimiter struct {
@@ -236,9 +265,10 @@ func (l *gtmRateLimiter) wait(ctx context.Context) error {
 }
 
 type gtmCollectionCache struct {
-	mu          sync.Mutex
-	collections map[string]map[string]map[string]any
-	containers  map[string]containerSupportCacheEntry
+	mu           sync.Mutex
+	collections  map[string]map[string]map[string]any
+	containers   map[string]containerSupportCacheEntry
+	workspaceIDs map[string]string
 }
 
 type containerSupportCacheEntry struct {
@@ -281,6 +311,54 @@ func (c *gtmCollectionCache) invalidateCollection(collectionPath string) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	delete(c.collections, collectionPath)
+}
+
+func (c *gtmCollectionCache) setCollectionItem(collectionPath, itemPath string, item map[string]any) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	items, ok := c.collections[collectionPath]
+	if !ok {
+		// Collection was never loaded; leave it uncached so the next read
+		// fetches the full, authoritative list instead of a partial one.
+		return
+	}
+	items[itemPath] = cloneMap(item)
+}
+
+func (c *gtmCollectionCache) removeCollectionItem(collectionPath, itemPath string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	items, ok := c.collections[collectionPath]
+	if !ok {
+		return
+	}
+	delete(items, itemPath)
+}
+
+func (c *gtmCollectionCache) getWorkspaceID(cacheKey string) (string, bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	id, ok := c.workspaceIDs[cacheKey]
+	return id, ok
+}
+
+func (c *gtmCollectionCache) setWorkspaceID(cacheKey, workspaceID string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.workspaceIDs == nil {
+		c.workspaceIDs = map[string]string{}
+	}
+	c.workspaceIDs[cacheKey] = workspaceID
+}
+
+func (c *gtmCollectionCache) invalidateWorkspaceIDsWithPrefix(prefix string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	for key := range c.workspaceIDs {
+		if strings.HasPrefix(key, prefix) {
+			delete(c.workspaceIDs, key)
+		}
+	}
 }
 
 func (c *gtmCollectionCache) getContainerSupport(containerPath string) (bool, bool, bool) {

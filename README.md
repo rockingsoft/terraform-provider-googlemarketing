@@ -11,9 +11,9 @@ go mod tidy
 go install .
 
 export GOOGLEMARKETING_PLATFORM="$(go env GOOS)_$(go env GOARCH)"
-mkdir -p "$HOME/.terraform.d/plugins/registry.terraform.io/rockingsoft/googlemarketing/1.0.1/$GOOGLEMARKETING_PLATFORM"
+mkdir -p "$HOME/.terraform.d/plugins/registry.terraform.io/rockingsoft/googlemarketing/1.0.0/$GOOGLEMARKETING_PLATFORM"
 cp "$(go env GOPATH)/bin/terraform-provider-googlemarketing" \
-  "$HOME/.terraform.d/plugins/registry.terraform.io/rockingsoft/googlemarketing/1.0.1/$GOOGLEMARKETING_PLATFORM/terraform-provider-googlemarketing_v1.0.1"
+  "$HOME/.terraform.d/plugins/registry.terraform.io/rockingsoft/googlemarketing/1.0.0/$GOOGLEMARKETING_PLATFORM/terraform-provider-googlemarketing_v1.0.0"
 ```
 
 ## Credentials
@@ -44,7 +44,7 @@ terraform {
   required_providers {
     googlemarketing = {
       source  = "rockingsoft/googlemarketing"
-      version = "1.0.1"
+      version = "1.0.0"
     }
   }
 }
@@ -62,7 +62,7 @@ provider "googlemarketing" {
 
 You can also set `GOOGLEMARKETING_GTM_REQUEST_INTERVAL_MS`. Use `0` to disable provider-side GTM pacing.
 
-## GA4 and GTM Release
+## GA4 and GTM
 
 ```hcl
 resource "googlemarketing_ga4_web_data_stream" "web" {
@@ -71,28 +71,29 @@ resource "googlemarketing_ga4_web_data_stream" "web" {
   default_uri  = var.site_url
 }
 
-resource "googlemarketing_gtm_container_release" "tracking" {
-  account_id     = var.gtm_account_id
-  container_id   = var.gtm_container_id
-  workspace_name = "Default Workspace"
-  name           = "Terraform ${var.release_revision}"
-  notes          = "Published by Terraform"
-  revision       = var.release_revision
+resource "googlemarketing_gtm_trigger" "purchase" {
+  account_id        = var.gtm_account_id
+  container_id      = var.gtm_container_id
+  name              = "Event - purchase"
+  type              = "CUSTOM_EVENT"
+  custom_event_name = "purchase"
+}
 
-  trigger {
-    key               = "purchase"
-    name              = "Event - purchase"
-    type              = "customEvent"
-    custom_event_name = "purchase"
-  }
+resource "googlemarketing_gtm_tag" "ga4_purchase" {
+  account_id         = var.gtm_account_id
+  container_id       = var.gtm_container_id
+  name               = "GA4 - purchase"
+  type               = "gaawe"
+  event_name         = "purchase"
+  measurement_id     = googlemarketing_ga4_web_data_stream.web.measurement_id
+  firing_trigger_ids = [googlemarketing_gtm_trigger.purchase.entity_id]
+}
 
-  ga4_event_tag {
-    key                     = "ga4_purchase"
-    name                    = "GA4 - purchase"
-    event_name              = "purchase"
-    measurement_id_override = googlemarketing_ga4_web_data_stream.web.measurement_id
-    trigger_keys            = ["purchase"]
-  }
+resource "googlemarketing_gtm_publish" "tracking" {
+  account_id   = var.gtm_account_id
+  container_id = var.gtm_container_id
+  version_name = "Terraform release"
+  depends_on   = [googlemarketing_gtm_tag.ga4_purchase]
 }
 
 resource "googlemarketing_ga4_key_event" "purchase" {
@@ -101,15 +102,16 @@ resource "googlemarketing_ga4_key_event" "purchase" {
 }
 ```
 
-`googlemarketing_gtm_container_release` treats a GTM workspace as an editable release area. Terraform state is anchored to the published container version, not to workspace-scoped tag, trigger, or variable IDs that can rotate after publish.
-
-Use a `release_revision` value derived only from the desired GTM release content. A global deploy hash can publish a new GTM version for unrelated application, DNS, secret, or runtime changes.
+`googlemarketing_gtm_variable`, `googlemarketing_gtm_trigger`, and `googlemarketing_gtm_tag` are independent, full-CRUD resources anchored to a stable `entity_id` that survives GTM publishes — changing one entity only plans a change for that entity. `googlemarketing_gtm_publish` creates and publishes a new container version automatically whenever GTM reports the workspace has pending changes; it never forces a replace on its own, so tweaking `version_name` or `notes` doesn't trigger a republish. See [`docs/resources/gtm_publish.md`](docs/resources/gtm_publish.md) for how it detects pending changes without a manual `depends_on` list per entity, and for the migration note from the old `googlemarketing_gtm_container_release` resource.
 
 ## Resources
 
 GTM:
 
-- `googlemarketing_gtm_container_release`
+- `googlemarketing_gtm_variable`
+- `googlemarketing_gtm_trigger`
+- `googlemarketing_gtm_tag`
+- `googlemarketing_gtm_publish`
 
 GA4:
 

@@ -9,7 +9,7 @@ terraform {
   required_providers {
     googlemarketing = {
       source  = "rockingsoft/googlemarketing"
-      version = "1.0.1"
+      version = "1.0.0"
     }
   }
 }
@@ -43,37 +43,43 @@ export GOOGLE_APPLICATION_CREDENTIALS="$PWD/credentials.json"
 ## Example Usage
 
 ```terraform
-resource "googlemarketing_gtm_container_release" "tracking" {
-  account_id     = var.gtm_account_id
-  container_id   = var.gtm_container_id
-  workspace_name = "Default Workspace"
-  name           = "Terraform ${var.release_revision}"
-  revision       = var.release_revision
+resource "googlemarketing_gtm_trigger" "purchase" {
+  account_id        = var.gtm_account_id
+  container_id      = var.gtm_container_id
+  name              = "Event - purchase"
+  type              = "CUSTOM_EVENT"
+  custom_event_name = "purchase"
+}
 
-  trigger {
-    key               = "purchase"
-    name              = "Event - purchase"
-    type              = "customEvent"
-    custom_event_name = "purchase"
-  }
+resource "googlemarketing_gtm_tag" "custom_purchase" {
+  account_id         = var.gtm_account_id
+  container_id       = var.gtm_container_id
+  name               = "Custom purchase tag"
+  type               = "html"
+  html               = "<script>window.dataLayer.push({event: 'purchase_seen'});</script>"
+  firing_trigger_ids = [googlemarketing_gtm_trigger.purchase.entity_id]
+}
 
-  tag {
-    key          = "custom_purchase"
-    name         = "Custom purchase tag"
-    type         = "html"
-    html         = "<script>window.dataLayer.push({event: 'purchase_seen'});</script>"
-    trigger_keys = ["purchase"]
-  }
+resource "googlemarketing_gtm_publish" "tracking" {
+  account_id   = var.gtm_account_id
+  container_id = var.gtm_container_id
+  version_name = "Terraform release"
+  # custom_purchase already depends on purchase (firing_trigger_ids), so
+  # depending on the tag is enough to order this after both.
+  depends_on = [googlemarketing_gtm_tag.custom_purchase]
 }
 ```
 
-Set `release_revision` from the desired GTM release content only. Do not use a global deploy hash if unrelated changes should not publish a new GTM version.
+`googlemarketing_gtm_variable`, `googlemarketing_gtm_trigger`, and `googlemarketing_gtm_tag` are independent resources: changing one only plans a change for that entity, not for the whole container. `googlemarketing_gtm_publish` creates and publishes a new GTM container version automatically whenever the workspace actually has pending changes — see [`googlemarketing_gtm_publish`](resources/gtm_publish.md) for how it decides that without a manual `depends_on` list per entity.
 
 ## Resources
 
 Google Tag Manager:
 
-- `googlemarketing_gtm_container_release`
+- `googlemarketing_gtm_variable`
+- `googlemarketing_gtm_trigger`
+- `googlemarketing_gtm_tag`
+- `googlemarketing_gtm_publish`
 
 Google Analytics 4 Admin:
 

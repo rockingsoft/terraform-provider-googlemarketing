@@ -113,9 +113,16 @@ type ga4AdminImport struct {
 
 func parseGA4AdminPath(raw string) (ga4AdminImport, error) {
 	name := strings.Trim(raw, "/")
+	if parts := strings.Split(name, "."); len(parts) == 3 {
+		propertyID, collection, resourceID := parts[0], parts[1], parts[2]
+		if propertyID != "" && collection != "" && resourceID != "" {
+			name = fmt.Sprintf("properties/%s/%s/%s", propertyID, collection, resourceID)
+			return ga4AdminImport{Parent: "properties/" + propertyID, Collection: collection, Name: name}, nil
+		}
+	}
 	matches := ga4AdminPathRE.FindStringSubmatch(name)
 	if matches == nil {
-		return ga4AdminImport{}, fmt.Errorf("expected properties/{property_id}/{collection}/{resource_id}")
+		return ga4AdminImport{}, fmt.Errorf("expected {property_id}.{collection}.{resource_id} or properties/{property_id}/{collection}/{resource_id}")
 	}
 	return ga4AdminImport{Parent: matches[1], Collection: matches[2], Name: name}, nil
 }

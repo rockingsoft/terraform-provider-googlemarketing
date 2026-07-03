@@ -60,6 +60,40 @@ func (c *marketingClient) getGTMCollectionItem(ctx context.Context, collectionPa
 	return item, true, nil
 }
 
+// getGTMCollectionItemByID finds an entity by its stable short ID (for
+// example triggerId) within a workspace collection. The item's workspace
+// path is looked up from the same cached collection fetch that
+// getGTMCollection uses, so reading N entities of the same kind costs a
+// single GET.
+func (c *marketingClient) getGTMCollectionItemByID(ctx context.Context, collectionPath, idKey, id string) (map[string]any, bool, error) {
+	items, err := c.getGTMCollection(ctx, collectionPath)
+	if err != nil {
+		return nil, false, err
+	}
+	for _, item := range items {
+		if stringFromMap(item, idKey) == id {
+			return item, true, nil
+		}
+	}
+	return nil, false, nil
+}
+
+// getGTMCollectionItemByName finds an entity by its display name within a
+// workspace collection, used to adopt pre-existing entities on Create
+// instead of failing on a duplicate-name error from the API.
+func (c *marketingClient) getGTMCollectionItemByName(ctx context.Context, collectionPath, name string) (map[string]any, bool, error) {
+	items, err := c.getGTMCollection(ctx, collectionPath)
+	if err != nil {
+		return nil, false, err
+	}
+	for _, item := range items {
+		if stringFromMap(item, "name") == name {
+			return item, true, nil
+		}
+	}
+	return nil, false, nil
+}
+
 func (c *marketingClient) getGTMCollection(ctx context.Context, collectionPath string) (map[string]map[string]any, error) {
 	collectionPath = strings.Trim(collectionPath, "/")
 	if c.gtmCache != nil {
@@ -132,6 +166,26 @@ func (c *marketingClient) invalidateGTMCollection(collectionPath string) {
 		return
 	}
 	c.gtmCache.invalidateCollection(strings.Trim(collectionPath, "/"))
+}
+
+// updateGTMCollectionItem writes a single item back into an already-cached
+// collection instead of invalidating the whole collection. This keeps a
+// create/update of one entity from forcing a refetch (and an extra GET) the
+// next time a sibling entity of the same kind is read in the same plan/apply.
+func (c *marketingClient) updateGTMCollectionItem(collectionPath, itemPath string, item map[string]any) {
+	if c.gtmCache == nil {
+		return
+	}
+	c.gtmCache.setCollectionItem(strings.Trim(collectionPath, "/"), strings.Trim(itemPath, "/"), item)
+}
+
+// removeGTMCollectionItem drops a single item from an already-cached
+// collection after a successful delete, avoiding a full collection refetch.
+func (c *marketingClient) removeGTMCollectionItem(collectionPath, itemPath string) {
+	if c.gtmCache == nil {
+		return
+	}
+	c.gtmCache.removeCollectionItem(strings.Trim(collectionPath, "/"), strings.Trim(itemPath, "/"))
 }
 
 func gtmCollectionItems(out map[string]any, collectionPath string) []map[string]any {

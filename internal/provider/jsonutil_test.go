@@ -43,8 +43,39 @@ func TestParseGTMGoogleTagConfigPath(t *testing.T) {
 	}
 }
 
+func TestParseGTMContainerEntityID(t *testing.T) {
+	got, err := parseGTMContainerEntityID("accounts/1/containers/2/triggers/123")
+	if err != nil {
+		t.Fatalf("parseGTMContainerEntityID returned error: %v", err)
+	}
+	if got.AccountID != "1" || got.ContainerID != "2" || got.Kind != "trigger" || got.EntityID != "123" {
+		t.Fatalf("unexpected parsed ID: %#v", got)
+	}
+	if _, err := parseGTMContainerEntityID("accounts/1/containers/2/workspaces/3/triggers/123"); err == nil {
+		t.Fatal("expected workspace-scoped path to fail the stable-form parser")
+	}
+}
+
+func TestGTMContainerEntityID(t *testing.T) {
+	got := gtmContainerEntityID("1", "2", "triggers", "123")
+	want := "accounts/1/containers/2/triggers/123"
+	if got != want {
+		t.Fatalf("gtmContainerEntityID() = %q, want %q", got, want)
+	}
+}
+
 func TestParseGA4AdminPath(t *testing.T) {
 	got, err := parseGA4AdminPath("properties/123/keyEvents/456")
+	if err != nil {
+		t.Fatalf("parseGA4AdminPath returned error: %v", err)
+	}
+	if got.Parent != "properties/123" || got.Collection != "keyEvents" || got.Name != "properties/123/keyEvents/456" {
+		t.Fatalf("unexpected parsed path: %#v", got)
+	}
+}
+
+func TestParseGA4AdminPathShortForm(t *testing.T) {
+	got, err := parseGA4AdminPath("123.keyEvents.456")
 	if err != nil {
 		t.Fatalf("parseGA4AdminPath returned error: %v", err)
 	}

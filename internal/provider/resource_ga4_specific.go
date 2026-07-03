@@ -234,18 +234,25 @@ func (r *ga4TypedResource) Delete(ctx context.Context, req resource.DeleteReques
 }
 
 func (r *ga4TypedResource) ImportState(ctx context.Context, req resource.ImportStateRequest, resp *resource.ImportStateResponse) {
-	name := strings.Trim(req.ID, "/")
-	var out map[string]any
-	if err := r.client.doJSON(ctx, http.MethodGet, gaURL(name), nil, &out, nil); err != nil {
-		resp.Diagnostics.AddError("Unable to read imported GA4 resource", err.Error())
-		return
-	}
-	parentID, err := ga4ParentIDFromImport(r.typeSuffix, name, out)
+	parsed, err := parseGA4TypedImportID(r.kind, req.ID)
 	if err != nil {
 		resp.Diagnostics.AddError("Invalid GA4 import ID", err.Error())
 		return
 	}
-	state := ga4TypedModel{ID: types.StringValue(name), ParentID: types.StringValue(parentID), Name: types.StringValue(name)}
+	var out map[string]any
+	if err := r.client.doJSON(ctx, http.MethodGet, gaURL(parsed.Name), nil, &out, nil); err != nil {
+		resp.Diagnostics.AddError("Unable to read imported GA4 resource", err.Error())
+		return
+	}
+	parentID, err := ga4ParentIDFromImport(r.typeSuffix, parsed.Name, out)
+	if err != nil {
+		resp.Diagnostics.AddError("Invalid GA4 import ID", err.Error())
+		return
+	}
+	if parentID == "" && parsed.ParentID != "" {
+		parentID = parsed.ParentID
+	}
+	state := ga4TypedModel{ID: types.StringValue(parsed.Name), ParentID: types.StringValue(parentID), Name: types.StringValue(parsed.Name)}
 	applyGA4Remote(&state, r.kind, out)
 	resp.Diagnostics.Append(resp.State.Set(ctx, &state)...)
 }
@@ -425,6 +432,56 @@ func applyStringRemote(target *types.String, out map[string]any, key string) {
 
 func ga4PropertyIDFromName(name string) string {
 	return strings.TrimPrefix(strings.Trim(name, "/"), "properties/")
+}
+
+type ga4TypedImport struct {
+	Name     string
+	ParentID string
+}
+
+func parseGA4TypedImportID(kind, raw string) (ga4TypedImport, error) {
+	id := strings.Trim(raw, "/")
+	if !strings.Contains(id, "/") {
+		return parseGA4TypedShortImportID(kind, id)
+	}
+	return ga4TypedImport{Name: id}, nil
+}
+
+func parseGA4TypedShortImportID(kind, raw string) (ga4TypedImport, error) {
+	switch kind {
+	case "property":
+		accountID, propertyID, ok := strings.Cut(raw, ".")
+		if !ok || accountID == "" || propertyID == "" || strings.Contains(propertyID, ".") {
+			return ga4TypedImport{}, fmt.Errorf("expected {account_id}.{property_id} or properties/{property_id}")
+		}
+		return ga4TypedImport{Name: "properties/" + propertyID, ParentID: accountID}, nil
+	case "web_data_stream":
+		return parseGA4TypedChildShortImportID(raw, "dataStreams", "{property_id}.{data_stream_id}")
+	case "key_event":
+		return parseGA4TypedChildShortImportID(raw, "keyEvents", "{property_id}.{key_event_id}")
+	case "custom_dimension":
+		return parseGA4TypedChildShortImportID(raw, "customDimensions", "{property_id}.{custom_dimension_id}")
+	case "custom_metric":
+		return parseGA4TypedChildShortImportID(raw, "customMetrics", "{property_id}.{custom_metric_id}")
+	case "data_retention_settings":
+		if raw == "" || strings.Contains(raw, ".") {
+			return ga4TypedImport{}, fmt.Errorf("expected {property_id} or properties/{property_id}/dataRetentionSettings")
+		}
+		return ga4TypedImport{Name: fmt.Sprintf("properties/%s/dataRetentionSettings", raw), ParentID: raw}, nil
+	default:
+		return ga4TypedImport{}, fmt.Errorf("unsupported GA4 resource kind %q", kind)
+	}
+}
+
+func parseGA4TypedChildShortImportID(raw, collection, expected string) (ga4TypedImport, error) {
+	propertyID, resourceID, ok := strings.Cut(raw, ".")
+	if !ok || propertyID == "" || resourceID == "" || strings.Contains(resourceID, ".") {
+		return ga4TypedImport{}, fmt.Errorf("expected %s or properties/{property_id}/%s/{resource_id}", expected, collection)
+	}
+	return ga4TypedImport{
+		Name:     fmt.Sprintf("properties/%s/%s/%s", propertyID, collection, resourceID),
+		ParentID: propertyID,
+	}, nil
 }
 
 func withUpdateMaskFields(apiURL string, fields []string) string {

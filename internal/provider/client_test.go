@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -114,6 +115,56 @@ func TestDoJSONDoesNotRateLimitNonGTM(t *testing.T) {
 	}
 	if elapsed := time.Since(start); elapsed > 100*time.Millisecond {
 		t.Fatalf("elapsed = %s, non-GTM requests should not be GTM rate limited", elapsed)
+	}
+}
+
+func TestKeyedMutexSerializesSameKey(t *testing.T) {
+	locks := newKeyedMutex()
+	firstRelease := make(chan struct{})
+	firstLocked := make(chan struct{})
+	secondDone := make(chan struct{})
+	var concurrent int32
+	var maxConcurrent int32
+
+	go func() {
+		unlock := locks.lock("123")
+		current := atomic.AddInt32(&concurrent, 1)
+		atomic.StoreInt32(&maxConcurrent, current)
+		close(firstLocked)
+		<-firstRelease
+		atomic.AddInt32(&concurrent, -1)
+		unlock()
+	}()
+
+	<-firstLocked
+	go func() {
+		unlock := locks.lock("123")
+		current := atomic.AddInt32(&concurrent, 1)
+		for {
+			max := atomic.LoadInt32(&maxConcurrent)
+			if current <= max || atomic.CompareAndSwapInt32(&maxConcurrent, max, current) {
+				break
+			}
+		}
+		atomic.AddInt32(&concurrent, -1)
+		unlock()
+		close(secondDone)
+	}()
+
+	select {
+	case <-secondDone:
+		t.Fatal("second lock acquired before first lock was released")
+	case <-time.After(20 * time.Millisecond):
+	}
+
+	close(firstRelease)
+	select {
+	case <-secondDone:
+	case <-time.After(time.Second):
+		t.Fatal("second lock did not acquire after first lock was released")
+	}
+	if got := atomic.LoadInt32(&maxConcurrent); got != 1 {
+		t.Fatalf("max concurrent locks = %d, want 1", got)
 	}
 }
 

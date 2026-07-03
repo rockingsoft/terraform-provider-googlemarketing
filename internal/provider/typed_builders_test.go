@@ -3,6 +3,7 @@ package provider
 import (
 	"context"
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/hashicorp/terraform-plugin-framework/types"
@@ -37,6 +38,236 @@ func TestBuildGTMTagPayloadIncludesNotes(t *testing.T) {
 
 	if got, want := payload["notes"], "Published by Terraform"; got != want {
 		t.Fatalf("notes = %#v, want %#v", got, want)
+	}
+}
+
+func TestBuildAdsConversionActionPayloadNativeFields(t *testing.T) {
+	model := adsConversionActionModel{
+		Name:                           types.StringValue("Demo request"),
+		Type:                           types.StringValue("WEBPAGE"),
+		Category:                       types.StringValue("SUBMIT_LEAD_FORM"),
+		Status:                         types.StringValue("ENABLED"),
+		CountingType:                   types.StringValue("ONE_PER_CLICK"),
+		ClickThroughLookbackWindowDays: types.Int64Value(30),
+		ViewThroughLookbackWindowDays:  types.Int64Value(1),
+	}
+
+	payload := buildAdsConversionActionPayload(model, false)
+
+	want := map[string]any{
+		"name":                           "Demo request",
+		"type":                           "WEBPAGE",
+		"category":                       "SUBMIT_LEAD_FORM",
+		"status":                         "ENABLED",
+		"countingType":                   "ONE_PER_CLICK",
+		"clickThroughLookbackWindowDays": int64(30),
+		"viewThroughLookbackWindowDays":  int64(1),
+	}
+	if !reflect.DeepEqual(payload, want) {
+		t.Fatalf("payload = %#v, want %#v", payload, want)
+	}
+}
+
+func TestAdsConversionActionMutateBodyUsesResourceSpecificOperationShape(t *testing.T) {
+	operation := map[string]any{
+		"create": map[string]any{
+			"name": "Demo request",
+		},
+	}
+
+	body := adsConversionActionMutateBody(operation)
+
+	want := map[string]any{
+		"operations": []any{operation},
+	}
+	if !reflect.DeepEqual(body, want) {
+		t.Fatalf("body = %#v, want %#v", body, want)
+	}
+	operations := body["operations"].([]any)
+	first := operations[0].(map[string]any)
+	if _, ok := first["conversionActionOperation"]; ok {
+		t.Fatalf("body contains conversionActionOperation wrapper: %#v", body)
+	}
+}
+
+func TestAdsConversionActionReadQueryOmitsProhibitedValueSettings(t *testing.T) {
+	query := adsConversionActionReadQuery("customers/123/conversionActions/456")
+
+	if strings.Contains(query, "conversion_action.value_settings") {
+		t.Fatalf("query includes prohibited value_settings field: %s", query)
+	}
+	if !strings.Contains(query, "conversion_action.tag_snippets") {
+		t.Fatalf("query does not include tag_snippets: %s", query)
+	}
+}
+
+func TestParseAdsConversionActionImportIDShortForm(t *testing.T) {
+	customerID, resourceName, err := parseAdsConversionActionImportID("123.456")
+	if err != nil {
+		t.Fatalf("parse returned error: %v", err)
+	}
+	if customerID != "123" {
+		t.Fatalf("customerID = %q, want 123", customerID)
+	}
+	if resourceName != "customers/123/conversionActions/456" {
+		t.Fatalf("resourceName = %q, want customers/123/conversionActions/456", resourceName)
+	}
+}
+
+func TestParseAdsConversionActionImportIDLongForm(t *testing.T) {
+	customerID, resourceName, err := parseAdsConversionActionImportID("123/customers/123/conversionActions/456")
+	if err != nil {
+		t.Fatalf("parse returned error: %v", err)
+	}
+	if customerID != "123" {
+		t.Fatalf("customerID = %q, want 123", customerID)
+	}
+	if resourceName != "customers/123/conversionActions/456" {
+		t.Fatalf("resourceName = %q, want customers/123/conversionActions/456", resourceName)
+	}
+}
+
+func TestParseGA4TypedImportIDShortForms(t *testing.T) {
+	tests := []struct {
+		name       string
+		kind       string
+		raw        string
+		wantName   string
+		wantParent string
+	}{
+		{
+			name:       "property",
+			kind:       "property",
+			raw:        "111.222",
+			wantName:   "properties/222",
+			wantParent: "111",
+		},
+		{
+			name:       "web data stream",
+			kind:       "web_data_stream",
+			raw:        "222.333",
+			wantName:   "properties/222/dataStreams/333",
+			wantParent: "222",
+		},
+		{
+			name:       "key event",
+			kind:       "key_event",
+			raw:        "222.444",
+			wantName:   "properties/222/keyEvents/444",
+			wantParent: "222",
+		},
+		{
+			name:       "custom dimension",
+			kind:       "custom_dimension",
+			raw:        "222.555",
+			wantName:   "properties/222/customDimensions/555",
+			wantParent: "222",
+		},
+		{
+			name:       "custom metric",
+			kind:       "custom_metric",
+			raw:        "222.666",
+			wantName:   "properties/222/customMetrics/666",
+			wantParent: "222",
+		},
+		{
+			name:       "data retention settings",
+			kind:       "data_retention_settings",
+			raw:        "222",
+			wantName:   "properties/222/dataRetentionSettings",
+			wantParent: "222",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := parseGA4TypedImportID(tt.kind, tt.raw)
+			if err != nil {
+				t.Fatalf("parse returned error: %v", err)
+			}
+			if got.Name != tt.wantName || got.ParentID != tt.wantParent {
+				t.Fatalf("parse = %#v, want name=%q parent=%q", got, tt.wantName, tt.wantParent)
+			}
+		})
+	}
+}
+
+func TestParseGA4TypedImportIDLongForm(t *testing.T) {
+	got, err := parseGA4TypedImportID("web_data_stream", "properties/222/dataStreams/333")
+	if err != nil {
+		t.Fatalf("parse returned error: %v", err)
+	}
+	if got.Name != "properties/222/dataStreams/333" || got.ParentID != "" {
+		t.Fatalf("parse = %#v, want long name without parent hint", got)
+	}
+}
+
+func TestApplyAdsConversionActionRemoteExtractsTrackingOutputs(t *testing.T) {
+	model := adsConversionActionModel{}
+	applyAdsConversionActionRemote(&model, map[string]any{
+		"resourceName": "customers/123/conversionActions/456",
+		"name":         "Demo request",
+		"type":         "WEBPAGE",
+		"category":     "SUBMIT_LEAD_FORM",
+		"status":       "ENABLED",
+		"tagSnippets": []any{
+			map[string]any{
+				"type":         "WEBPAGE_ONCLICK",
+				"pageFormat":   "HTML",
+				"eventSnippet": "gtag('event', 'conversion', {'send_to': 'AW-999/click'});",
+			},
+			map[string]any{
+				"type":          "WEBPAGE",
+				"pageFormat":    "HTML",
+				"globalSiteTag": "<script>gtag('config', 'AW-123');</script>",
+				"eventSnippet":  "gtag('event', 'conversion', {'send_to': 'AW-123/label'});",
+			},
+		},
+	})
+
+	if model.SendTo.ValueString() != "AW-123/label" {
+		t.Fatalf("send_to = %q, want AW-123/label", model.SendTo.ValueString())
+	}
+	if model.ConversionID.ValueString() != "AW-123" || model.ConversionLabel.ValueString() != "label" {
+		t.Fatalf("conversion outputs = %q %q, want AW-123 label", model.ConversionID.ValueString(), model.ConversionLabel.ValueString())
+	}
+	var snippets []adsTagSnippetModel
+	diags := model.TagSnippets.ElementsAs(context.Background(), &snippets, false)
+	if diags.HasError() {
+		t.Fatalf("tag snippets could not be decoded: %#v", diags)
+	}
+	if len(snippets) != 2 || snippets[1].GlobalSiteTag.ValueString() == "" {
+		t.Fatalf("tag snippets were not mapped: %#v", snippets)
+	}
+}
+
+func TestApplyAdsConversionActionRemoteMapsMissingTagSnippetsToKnownEmptyList(t *testing.T) {
+	model := adsConversionActionModel{
+		TagSnippets: types.ListUnknown(adsTagSnippetObjectType),
+	}
+	applyAdsConversionActionRemote(&model, map[string]any{
+		"resourceName": "customers/123/conversionActions/456",
+		"name":         "Demo request",
+		"type":         "WEBPAGE",
+		"category":     "SUBMIT_LEAD_FORM",
+		"status":       "ENABLED",
+	})
+
+	if model.TagSnippets.IsUnknown() || model.TagSnippets.IsNull() {
+		t.Fatalf("tag snippets = %#v, want known empty list", model.TagSnippets)
+	}
+	if len(model.TagSnippets.Elements()) != 0 {
+		t.Fatalf("tag snippets length = %d, want 0", len(model.TagSnippets.Elements()))
+	}
+	if !model.SendTo.IsNull() || !model.ConversionID.IsNull() || !model.ConversionLabel.IsNull() {
+		t.Fatalf("tracking outputs = %#v %#v %#v, want nulls", model.SendTo, model.ConversionID, model.ConversionLabel)
+	}
+}
+
+func TestAdsSendToFromEventSnippetSupportsDoubleQuotes(t *testing.T) {
+	got := adsSendToFromEventSnippet(`gtag("event", "conversion", {"send_to": "AW-123/abc_DEF-1"});`)
+	if got != "AW-123/abc_DEF-1" {
+		t.Fatalf("send_to = %q, want AW-123/abc_DEF-1", got)
 	}
 }
 
@@ -254,26 +485,28 @@ func TestApplyGA4RemoteCompletesDriftFields(t *testing.T) {
 	}
 }
 
-func TestValidateGTMGA4EventTagRequiresMeasurementIDOverride(t *testing.T) {
-	model := gtmGA4EventTagModel{
-		Name:       types.StringValue("GA4 - signup_started"),
-		EventName:  types.StringValue("signup_started"),
-		TriggerIDs: stringListValue([]string{"123"}),
+func TestValidateGTMTagAdditionalRequirementsRequiresMeasurementIDForGaawe(t *testing.T) {
+	model := gtmTypedWorkspaceEntityModel{
+		Name:             types.StringValue("GA4 - signup_started"),
+		Type:             types.StringValue("gaawe"),
+		EventName:        types.StringValue("signup_started"),
+		FiringTriggerIDs: stringListValue([]string{"123"}),
 	}
 
-	if err := validateGTMGA4EventTag(model); err == nil {
-		t.Fatalf("validateGTMGA4EventTag() error = nil, want error")
+	if err := validateGTMTagAdditionalRequirements(model); err == nil {
+		t.Fatalf("validateGTMTagAdditionalRequirements() error = nil, want error")
 	}
 }
 
-func TestBuildGTMGA4EventTagPayloadIncludesMeasurementIDOverride(t *testing.T) {
-	model := gtmGA4EventTagModel{
-		Name:                  types.StringValue("GA4 - purchase"),
-		EventName:             types.StringValue("purchase"),
-		MeasurementIDOverride: types.StringValue("G-ABC123"),
-		TriggerIDs:            stringListValue([]string{"123"}),
+func TestBuildGTMTagPayloadGaaweIncludesMeasurementIDOverride(t *testing.T) {
+	model := gtmTypedWorkspaceEntityModel{
+		Name:             types.StringValue("GA4 - purchase"),
+		Type:             types.StringValue("gaawe"),
+		EventName:        types.StringValue("purchase"),
+		MeasurementID:    types.StringValue("G-ABC123"),
+		FiringTriggerIDs: stringListValue([]string{"123"}),
 	}
-	payload := buildGTMGA4EventTagPayload(context.Background(), model)
+	payload := buildGTMPayload(context.Background(), "tag", model)
 	if got, want := payload["type"], "gaawe"; got != want {
 		t.Fatalf("type = %#v, want %#v", got, want)
 	}
@@ -287,8 +520,32 @@ func TestBuildGTMGA4EventTagPayloadIncludesMeasurementIDOverride(t *testing.T) {
 	if !hasGTMParam(params, "measurementIdOverride", "G-ABC123") {
 		t.Fatalf("unexpected GA4 event tag parameters: %#v", params)
 	}
-	if err := validateGTMGA4EventTag(model); err != nil {
-		t.Fatalf("validateGTMGA4EventTag() error = %v", err)
+	if err := validateGTMTagAdditionalRequirements(model); err != nil {
+		t.Fatalf("validateGTMTagAdditionalRequirements() error = %v", err)
+	}
+}
+
+func TestBuildGTMPayloadMergesAdditionalParamsSortedByKey(t *testing.T) {
+	elements, diags := types.MapValueFrom(context.Background(), types.StringType, map[string]string{
+		"zeta":  "z",
+		"alpha": "a",
+	})
+	if diags.HasError() {
+		t.Fatalf("MapValueFrom() diagnostics: %#v", diags)
+	}
+	model := gtmTypedWorkspaceEntityModel{
+		Name:             types.StringValue("Timer"),
+		Type:             types.StringValue("TIMER"),
+		AdditionalParams: elements,
+	}
+	payload := buildGTMPayload(context.Background(), "trigger", model)
+	params := payload["parameter"].([]any)
+	if len(params) != 2 {
+		t.Fatalf("parameter count = %d, want 2: %#v", len(params), params)
+	}
+	first := params[0].(map[string]any)
+	if first["key"] != "alpha" || first["value"] != "a" {
+		t.Fatalf("first param = %#v, want alpha=a", first)
 	}
 }
 

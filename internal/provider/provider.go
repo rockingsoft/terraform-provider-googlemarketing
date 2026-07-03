@@ -106,7 +106,10 @@ func (p *marketingProvider) Configure(ctx context.Context, req provider.Configur
 
 func (p *marketingProvider) Resources(_ context.Context) []func() resource.Resource {
 	return []func() resource.Resource{
-		NewGTMContainerReleaseResource,
+		NewGTMVariableResource,
+		NewGTMTriggerResource,
+		NewGTMTagResource,
+		NewGTMPublishResource,
 		NewGA4AdminResource,
 		NewGA4PropertyResource,
 		NewGA4WebDataStreamResource,
