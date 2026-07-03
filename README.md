@@ -11,9 +11,9 @@ go mod tidy
 go install .
 
 export GOOGLEMARKETING_PLATFORM="$(go env GOOS)_$(go env GOARCH)"
-mkdir -p "$HOME/.terraform.d/plugins/registry.terraform.io/rockingsoft/googlemarketing/1.0.0/$GOOGLEMARKETING_PLATFORM"
+mkdir -p "$HOME/.terraform.d/plugins/registry.terraform.io/rockingsoft/googlemarketing/2.0.0/$GOOGLEMARKETING_PLATFORM"
 cp "$(go env GOPATH)/bin/terraform-provider-googlemarketing" \
-  "$HOME/.terraform.d/plugins/registry.terraform.io/rockingsoft/googlemarketing/1.0.0/$GOOGLEMARKETING_PLATFORM/terraform-provider-googlemarketing_v1.0.0"
+  "$HOME/.terraform.d/plugins/registry.terraform.io/rockingsoft/googlemarketing/2.0.0/$GOOGLEMARKETING_PLATFORM/terraform-provider-googlemarketing_v2.0.0"
 ```
 
 ## Credentials
@@ -44,7 +44,7 @@ terraform {
   required_providers {
     googlemarketing = {
       source  = "rockingsoft/googlemarketing"
-      version = "1.0.0"
+      version = "2.0.0"
     }
   }
 }
