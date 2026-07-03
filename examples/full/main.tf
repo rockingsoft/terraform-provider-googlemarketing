@@ -2,7 +2,7 @@ terraform {
   required_providers {
     googlemarketing = {
       source  = "rockingsoft/googlemarketing"
-      version = "1.0.5"
+      version = "1.0.6"
     }
   }
 }
